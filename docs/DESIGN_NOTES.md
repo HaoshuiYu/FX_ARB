@@ -248,3 +248,11 @@ EX: EUR/USD vs JPY/USD relationship shifted, we can check the degree of relation
 ### 5-14-2026 Fundamental Reorganization
 ***Pair-wise Reorganization***
 - I realized if the purpose of the algorithm was to fulfill node-level predictions on shifts and divergences in currency relationships for arbitrage, there is no reason to include all G10 currencies at all and build a composite graph representative of all currencies. Rather, it's likely best to build a condensed version that only includes pairs we care about. It limits the objective which can likely improve interpretability and constrain overfitting. Most importantly, it avoids needing to have trained on a large sample only to have tossed out majority of the edges. 
+
+### 5-19-2026 Data Organization 
+*** Jet-lag and holidays***
+- An unrealized limitation is taht timing and jet lag means the "global index" needs to be normalized and adjusted for such that we recognize this limitation when trading to adhere to NY time normalized for all else. 
+- For holidays that are inconsistent, or rare asymmetric nans in particular nodes and not others, we roll forward the prior day's value such that we still have that edge for analysis. The difficulty is that this forward rolling must occur at the graph stage. 
+
+***Architectural Design***
+- It is an explicit design choice to articulate the graph transformer and GRU architectures separately in sequence. The objective is that the Graph Transformer would exclusively optimize for mapping relationality whereas the GRu exclusively tries to find sequential trends withn the relationships. It would offset likelihood of overfitting while maximizing utility of the graph architecture.
