@@ -251,8 +251,9 @@ EX: EUR/USD vs JPY/USD relationship shifted, we can check the degree of relation
 
 ### 5-19-2026 Data Organization 
 *** Jet-lag and holidays***
-- An unrealized limitation is taht timing and jet lag means the "global index" needs to be normalized and adjusted for such that we recognize this limitation when trading to adhere to NY time normalized for all else. 
+- An unrealized limitation is that timing and jet lag means the "global index" needs to be normalized and adjusted for such that we recognize this limitation when trading to adhere to NY time normalized for all else. 
 - For holidays that are inconsistent, or rare asymmetric nans in particular nodes and not others, we roll forward the prior day's value such that we still have that edge for analysis. The difficulty is that this forward rolling must occur at the graph stage. 
 
 ***Architectural Design***
 - It is an explicit design choice to articulate the graph transformer and GRU architectures separately in sequence. The objective is that the Graph Transformer would exclusively optimize for mapping relationality whereas the GRu exclusively tries to find sequential trends withn the relationships. It would offset likelihood of overfitting while maximizing utility of the graph architecture.
+
