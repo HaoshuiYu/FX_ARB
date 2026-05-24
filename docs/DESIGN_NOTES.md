@@ -263,5 +263,6 @@ EX: EUR/USD vs JPY/USD relationship shifted, we can check the degree of relation
 - Alternatively, I will define a new architecture that back propagates exclusively through the edges. This approach is justified as follows:
 1) Financial markets are heavily noise-induced. Higher order relationality signals are likely filled with noise and undermines the quality of gradient computation.
 2) The intended objective of this algorithm is to forecast local relational interactions such that we may capture statstional arbitrage in a relational lens in FX. 
+- The graph transformer will also compute edge relationships via the difference of Xn - Xm for n and m are node indices and X corresponds to the set of all initial vectors corresponding to each node.
 
 Limitation: the tradeoff is that without node-centric methods, we don't have ways of accessing higher order information since the nodes themselves only retain raw information and aren't updated at any stage. Thus, it only learns how to optimize graph configurations at the 1st level as opposed to capturing anything with higher dimensionality. Whether that tradeoff is a worthy pursuit could be a central question to investigate for the remainder of this project.
