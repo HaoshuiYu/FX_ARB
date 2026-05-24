@@ -257,3 +257,11 @@ EX: EUR/USD vs JPY/USD relationship shifted, we can check the degree of relation
 ***Architectural Design***
 - It is an explicit design choice to articulate the graph transformer and GRU architectures separately in sequence. The objective is that the Graph Transformer would exclusively optimize for mapping relationality whereas the GRu exclusively tries to find sequential trends withn the relationships. It would offset likelihood of overfitting while maximizing utility of the graph architecture.
 
+### 5-24-2026 Architecture
+***Edge-centric Architecture***
+- While it is possible to build edge-optimzed architectures through edgeconv and messageadd, those are constrained in nature since the optimization occurs through nodes, and reach edges by proxy, as a function of the transformation of nodes. 
+- Alternatively, I will define a new architecture that back propagates exclusively through the edges. This approach is justified as follows:
+1) Financial markets are heavily noise-induced. Higher order relationality signals are likely filled with noise and undermines the quality of gradient computation.
+2) The intended objective of this algorithm is to forecast local relational interactions such that we may capture statstional arbitrage in a relational lens in FX. 
+
+Limitation: the tradeoff is that without node-centric methods, we don't have ways of accessing higher order information since the nodes themselves only retain raw information and aren't updated at any stage. Thus, it only learns how to optimize graph configurations at the 1st level as opposed to capturing anything with higher dimensionality. Whether that tradeoff is a worthy pursuit could be a central question to investigate for the remainder of this project.
