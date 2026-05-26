@@ -64,12 +64,9 @@ class FXEdgeTransformer(nn.Module):
         Forward pass
             x: input of [pct_change, lvl, rolling_lvl] of dimensions [25, 75]  
             nan_mask: masking proper, TRUE = masked
- 
-        Returns:
-            edge_repr:   [6, 64]   one representation per directed edge
-            attn_weights:[6, 4, 25] post-softmax post-threshold, for orthogonality penalty
+        Only preserve 6 directed edges between 3 target nodes. Remaining nodes remain for context and aren't related to any except target nodes.
         """
-        # shared key/value projections — same for all edges
+    
         K = self.W_K(x)
         V = self.W_V(x)
  
@@ -80,3 +77,48 @@ class FXEdgeTransformer(nn.Module):
         edge_repr_list  = []
         attn_weight_list = []
  
+        for idx, (i, j) in enumerate(TARGET_EDGES):
+ 
+            # initialize edges: differencing captures directional relationality
+            diff = x[i] - x[j]                        
+            e    = self.edge_init[idx](diff)           # [75, 64] compression
+ 
+            # independent Q weight per edge 
+            q = self.W_Q[idx](e)                       
+            q_h = q.view(NUM_HEADS, D_HEAD)            # [4, 8] each 
+ 
+            # 4 heads, 25 x 8 (K) x 8 x 1 (Q)
+            scores = torch.bmm(K_h, q_h.unsqueeze(2)).squeeze(2) / (D_HEAD ** 0.5)  # [4, 8] final output, concatted
+ 
+            
+            if nan_mask is not None:
+                edge_mask = nan_mask.clone()
+                edge_mask[i] = True # always mask self node
+                edge_mask[j] = True
+                scores = scores.masked_fill(edge_mask.unsqueeze(0), float('-inf'))
+ 
+            # softmax over 25 nodes per head
+            attn = F.softmax(scores, dim=-1) # [4, 25]
+ 
+            
+            threshold_vals = attn.max(dim=-1, keepdim=True).values * THRESHOLD
+            attn = attn * (attn >= threshold_vals).float()
+ 
+            
+            attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-9)
+ 
+            # store post-softmax post-threshold weights for orthogonality penalty
+            attn_weight_list.append(attn)
+ 
+            context_h = torch.bmm(attn.unsqueeze(1), V_h).squeeze(1)
+            context   = context_h.reshape(D_MODEL)
+            context = self.W_O[idx](context)           
+            e = self.norm1[idx](e + context)
+            e = self.norm2[idx](e + self.ffn[idx](e))
+ 
+            edge_repr_list.append(e)
+ 
+        edge_repr    = torch.stack(edge_repr_list,   dim=0)
+        attn_weights = torch.stack(attn_weight_list, dim=0)
+ 
+        return edge_repr, attn_weights
