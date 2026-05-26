@@ -24,33 +24,26 @@ class FXEdgeTransformer(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # compress raw edges into 
-        self.input_proj = nn.Linear(D_INPUT, D_MODEL)
-
-        # edge initialization — one per target edge
+        # preserve dimensionality compress down the line 
         self.edge_init = nn.ModuleList([
-            nn.Linear(D_MODEL, D_EDGE)
+            nn.Linear(D_INPUT, D_EDGE)
             for _ in range(NUM_EDGES)
         ])
 
-        # per-edge query projection — each edge asks its own question
+        # per-edge query projection: necessary for different context edges to enrich different target edges
         self.W_Q = nn.ModuleList([
             nn.Linear(D_EDGE, D_MODEL)
             for _ in range(NUM_EDGES)
         ])
 
-        # shared key and value projections across all edges
-        self.W_K = nn.Linear(D_MODEL, D_MODEL)
-        self.W_V = nn.Linear(D_MODEL, D_MODEL)
+        # Compress information post attention
+        self.W_K = nn.Linear(D_INPUT, D_MODEL)
+        self.W_V = nn.Linear(D_INPUT, D_MODEL)
 
-        # output projection after head concatenation
         self.W_O = nn.ModuleList([
             nn.Linear(D_MODEL, D_EDGE)
             for _ in range(NUM_EDGES)
         ])
-
-        # attention bias prior — 25 scalars per edge
-        self.attn_bias = nn.Parameter(torch.zeros(NUM_EDGES, 25))
 
         # FFN per edge
         self.ffn = nn.ModuleList([
@@ -65,3 +58,25 @@ class FXEdgeTransformer(nn.Module):
 
         self.norm1 = nn.ModuleList([nn.LayerNorm(D_EDGE) for _ in range(NUM_EDGES)])
         self.norm2 = nn.ModuleList([nn.LayerNorm(D_EDGE) for _ in range(NUM_EDGES)])
+
+    def forward(self, x, nan_mask):
+        """
+        Forward pass
+            x: input of [pct_change, lvl, rolling_lvl] of dimensions [25, 75]  
+            nan_mask: masking proper, TRUE = masked
+ 
+        Returns:
+            edge_repr:   [6, 64]   one representation per directed edge
+            attn_weights:[6, 4, 25] post-softmax post-threshold, for orthogonality penalty
+        """
+        # shared key/value projections — same for all edges
+        K = self.W_K(x)
+        V = self.W_V(x)
+ 
+        # reshape into: [4, 25, 8]
+        K_h = K.view(25, NUM_HEADS, D_HEAD).permute(1, 0, 2) 
+        V_h = V.view(25, NUM_HEADS, D_HEAD).permute(1, 0, 2) 
+ 
+        edge_repr_list  = []
+        attn_weight_list = []
+ 
