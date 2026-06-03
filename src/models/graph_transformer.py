@@ -95,10 +95,24 @@ class FXEdgeTransformer(nn.Module):
                 edge_mask = nan_mask.clone()
                 edge_mask[i] = True # always mask self node
                 edge_mask[j] = True
-                scores = scores.masked_fill(edge_mask.unsqueeze(0), float('-inf'))
+                # FIX: use the dtype's most-negative FINITE value, not -inf.
+                # softmax over an all -inf row is 0/0 = NaN, which poisons the
+                # backward pass. With a finite fill, an all-masked row softmaxes
+                # to a uniform (finite) distribution instead of NaN.
+                neg = torch.finfo(scores.dtype).min
+                scores = scores.masked_fill(edge_mask.unsqueeze(0), neg)
  
             # softmax over 25 nodes per head
             attn = F.softmax(scores, dim=-1) # [4, 25]
+ 
+            if nan_mask is not None:
+                # FIX: force masked positions to exactly zero AFTER softmax.
+                # - partially masked rows: cleans up the ~1e-38 residue the
+                #   finite fill leaves behind, so masked nodes contribute 0
+                # - fully masked rows: zeroes the uniform distribution, so the
+                #   downstream renorm (sum + 1e-9) yields an all-zero row and
+                #   the edge simply receives no context that day. No NaN.
+                attn = attn.masked_fill(edge_mask.unsqueeze(0), 0.0)
  
             
             threshold_vals = attn.max(dim=-1, keepdim=True).values * THRESHOLD
@@ -122,3 +136,39 @@ class FXEdgeTransformer(nn.Module):
         attn_weights = torch.stack(attn_weight_list, dim=0)
  
         return edge_repr, attn_weights
+
+
+# ---------------------------------------------------------------------------
+# Self-test: runs ONLY when this file is executed directly
+# (`python graph_transformer.py`). Never runs on import / during training.
+# Verifies the NaN-safe masking: finite outputs and gradients under
+# (1) all 25 nodes masked — the pre-2007 worst case that NaN'd the old
+#     -inf version, (2) a realistic partial mask, (3) no mask.
+# Rerun after any change to the attention block.
+# ---------------------------------------------------------------------------
+if __name__ == '__main__':
+    torch.manual_seed(0)
+
+    def _check(label, nan_mask):
+        model = FXEdgeTransformer()
+        x = torch.randn(25, 75, requires_grad=True)
+        edge_repr, attn = model(x, nan_mask)
+        edge_repr.pow(2).mean().backward()      # NaNs usually detonate here
+        ok = (torch.isfinite(edge_repr).all()
+              and torch.isfinite(attn).all()
+              and torch.isfinite(x.grad).all())
+        print(f"[{label}] outputs/attn/grads finite: {bool(ok)}")
+        return attn, bool(ok)
+
+    attn_w, ok1 = _check("all 25 masked (worst case)", torch.ones(25, dtype=torch.bool))
+    ok1 &= bool((attn_w.sum(-1).abs() < 1e-6).all())          # dead rows sum to 0
+
+    partial = torch.zeros(25, dtype=torch.bool)
+    partial[[5, 9, 14, 20, 22, 23, 24]] = True
+    attn_p, ok2 = _check("7 of 25 masked (realistic)", partial)
+    ok2 &= bool((attn_p[:, :, torch.where(partial)[0]] == 0).all())  # masked = exactly 0
+    ok2 &= bool(((attn_p.sum(-1) - 1).abs() < 1e-4).all())           # live rows sum to 1
+
+    _, ok3 = _check("no mask (sanity)", None)
+
+    print("ALL CHECKS PASS" if (ok1 and ok2 and ok3) else "FAILED — do not train")

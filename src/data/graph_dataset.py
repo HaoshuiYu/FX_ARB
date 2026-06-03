@@ -6,6 +6,9 @@ from torch_geometric.data import Data, Dataset
 
 DATA_DIR = Path(__file__).parent.parent.parent / 'data'
 
+# forecast horizons in trading days
+HORIZONS = [3, 5, 10, 30]
+
 class FXGraphDataset(Dataset):
     def __init__(self, split='train'):
         super().__init__()
@@ -20,14 +23,24 @@ class FXGraphDataset(Dataset):
     def _get_indices(self, split):
         dates = pd.to_datetime(self.dates)
         if split == 'train':
-            return np.where(dates <= pd.Timestamp('2021-12-31'))[0]
+            idx = np.where(dates <= pd.Timestamp('2021-12-31'))[0]
         elif split == 'val':
-            return np.where((dates >= pd.Timestamp('2022-01-01')) &
-                            (dates <= pd.Timestamp('2023-12-31')))[0]
+            idx = np.where((dates >= pd.Timestamp('2022-01-01')) &
+                           (dates <= pd.Timestamp('2023-12-31')))[0]
         elif split == 'test':
-            return np.where(dates >= pd.Timestamp('2024-01-01'))[0]
+            idx = np.where(dates >= pd.Timestamp('2024-01-01'))[0]
         else:
-            return np.arange(len(dates))
+            idx = np.arange(len(dates))
+        # PURGE: drop samples whose longest forecast horizon would cross the
+        # end of this split. Two birds:
+        #   1. tail of the dataset — no future data exists, so the old code
+        #      emitted fake all-zero targets there
+        #   2. split boundaries — a train sample on 2021-12-30 with h=30 had
+        #      its label computed from Jan 2022 (validation period) data.
+        #      That is lookahead leakage across splits (de Prado purging).
+        if len(idx) > 0:
+            idx = idx[idx + max(HORIZONS) <= idx.max()]
+        return idx
 
     def len(self):
         return len(self.indices)
@@ -39,18 +52,20 @@ class FXGraphDataset(Dataset):
         return Data(x=x, nan_mask=nan_mask)
 
     def get_targets(self, idx):
-        t        = self.indices[idx]
-        horizons = [3, 5, 10, 30]
-        targets  = []
-        for h in horizons:
-            t_future = t + h
-            if t_future >= len(self.X):
-                targets.append(torch.zeros(3))
-            else:
-                future  = torch.tensor(self.X[t_future, :3, 0], dtype=torch.float32)
-                current = torch.tensor(self.X[t,        :3, 0], dtype=torch.float32)
-                targets.append(future - current)
-        return torch.stack(targets)
+        t       = self.indices[idx]
+        targets = []
+        for h in HORIZONS:
+            # FIX: the h-day move is the ACCUMULATION of daily returns over
+            # the window (t, t+h], i.e. sum of pct_change rows t+1 .. t+h.
+            # The old code did X[t+h,:,0] - X[t,:,0] — a difference of two
+            # 1-day return snapshots, which is ~0 for any steady trend and
+            # does not measure the horizon move at all.
+            # (Exact if pct_change is log returns; close approximation for
+            # small daily simple returns. Purged indices guarantee t+h is
+            # always in-bounds and inside this split.)
+            window = self.X[t + 1 : t + h + 1, :3, 0]           # [h, 3]
+            targets.append(torch.tensor(window.sum(axis=0), dtype=torch.float32))
+        return torch.stack(targets)                              # [4, 3]
 
 
 if __name__ == '__main__':
