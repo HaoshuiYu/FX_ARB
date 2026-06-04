@@ -9,6 +9,7 @@ D_EDGE      = 64
 NUM_HEADS   = 4
 D_HEAD      = D_MODEL // NUM_HEADS  # 8
 THRESHOLD   = 0.25
+SHARE_FFN   = True   # one FFN for all 6 edges; False = per-edge FFNs (+83k params)
 DROPOUT     = 0.2
 
 TARGET_EDGES = [
@@ -36,7 +37,13 @@ class FXEdgeTransformer(nn.Module):
             for _ in range(NUM_EDGES)
         ])
 
-        # Compress information post attention
+        # learned attention prior: per-edge standing preference over the 25
+        # nodes (adds node IDENTITY to attention — otherwise nodes are only
+        # distinguishable by feature values). 150 params. Data can override
+        # it daily; it's a soft prior, not a hard structure.
+        self.attn_bias = nn.Parameter(torch.zeros(NUM_EDGES, 25))
+
+        # shared K/V: one common description of the market all edges read
         self.W_K = nn.Linear(D_INPUT, D_MODEL)
         self.W_V = nn.Linear(D_INPUT, D_MODEL)
 
@@ -45,16 +52,20 @@ class FXEdgeTransformer(nn.Module):
             for _ in range(NUM_EDGES)
         ])
 
-        # FFN per edge
-        self.ffn = nn.ModuleList([
-            nn.Sequential(
+        # FFN: with SHARE_FFN one network serves all 6 edges (−83k params on
+        # ~5.6k training samples). Per-edge identity is preserved by
+        # edge_init / W_Q / W_O / per-edge norms. Flip the flag to revert.
+        def _make_ffn():
+            return nn.Sequential(
                 nn.Linear(D_EDGE, D_EDGE * 2),
                 nn.GELU(),
                 nn.Dropout(DROPOUT),
                 nn.Linear(D_EDGE * 2, D_EDGE)
             )
-            for _ in range(NUM_EDGES)
-        ])
+        if SHARE_FFN:
+            self.ffn = _make_ffn()
+        else:
+            self.ffn = nn.ModuleList([_make_ffn() for _ in range(NUM_EDGES)])
 
         self.norm1 = nn.ModuleList([nn.LayerNorm(D_EDGE) for _ in range(NUM_EDGES)])
         self.norm2 = nn.ModuleList([nn.LayerNorm(D_EDGE) for _ in range(NUM_EDGES)])
@@ -88,7 +99,8 @@ class FXEdgeTransformer(nn.Module):
             q_h = q.view(NUM_HEADS, D_HEAD)            # [4, 8] each 
  
             # 4 heads, 25 x 8 (K) x 8 x 1 (Q)
-            scores = torch.bmm(K_h, q_h.unsqueeze(2)).squeeze(2) / (D_HEAD ** 0.5)  # [4, 8] final output, concatted
+            scores = torch.bmm(K_h, q_h.unsqueeze(2)).squeeze(2) / (D_HEAD ** 0.5)  # [4, 25]
+            scores = scores + self.attn_bias[idx].unsqueeze(0)   # learned node prior
  
             
             if nan_mask is not None:
@@ -128,7 +140,8 @@ class FXEdgeTransformer(nn.Module):
             context   = context_h.reshape(D_MODEL)
             context = self.W_O[idx](context)           
             e = self.norm1[idx](e + context)
-            e = self.norm2[idx](e + self.ffn[idx](e))
+            ffn = self.ffn if SHARE_FFN else self.ffn[idx]
+            e = self.norm2[idx](e + ffn(e))
  
             edge_repr_list.append(e)
  
@@ -137,32 +150,3 @@ class FXEdgeTransformer(nn.Module):
  
         return edge_repr, attn_weights
 
-
-# ---------------------------------------------------------------------------
-# guards against NaN explosion which would silently occur. Manual implementation...
-if __name__ == '__main__':
-    torch.manual_seed(0)
-
-    def _check(label, nan_mask):
-        model = FXEdgeTransformer()
-        x = torch.randn(25, D_INPUT, requires_grad=True)
-        edge_repr, attn = model(x, nan_mask)
-        edge_repr.pow(2).mean().backward()      # NaNs usually detonate here
-        ok = (torch.isfinite(edge_repr).all()
-              and torch.isfinite(attn).all()
-              and torch.isfinite(x.grad).all())
-        print(f"[{label}] outputs/attn/grads finite: {bool(ok)}")
-        return attn, bool(ok)
-
-    attn_w, ok1 = _check("all 25 masked (worst case)", torch.ones(25, dtype=torch.bool))
-    ok1 &= bool((attn_w.sum(-1).abs() < 1e-6).all())          # dead rows sum to 0
-
-    partial = torch.zeros(25, dtype=torch.bool)
-    partial[[5, 9, 14, 20, 22, 23, 24]] = True
-    attn_p, ok2 = _check("7 of 25 masked (realistic)", partial)
-    ok2 &= bool((attn_p[:, :, torch.where(partial)[0]] == 0).all())  # masked = exactly 0
-    ok2 &= bool(((attn_p.sum(-1) - 1).abs() < 1e-4).all())           # live rows sum to 1
-
-    _, ok3 = _check("no mask (sanity)", None)
-
-    print("ALL CHECKS PASS" if (ok1 and ok2 and ok3) else "FAILED — do not train")

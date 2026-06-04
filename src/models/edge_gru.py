@@ -1,10 +1,9 @@
 import torch
 import torch.nn as nn
  
-try:
-    from .graph_transformer import NUM_EDGES, D_EDGE          
-except ImportError:
-    from graph_transformer import NUM_EDGES, D_EDGE           
+from src.models.graph_transformer import NUM_EDGES, D_EDGE
+ 
+   
  
 GRU_HIDDEN  = 8 # heavy penalties due to likelihood of overfitting
 GRU_DROPOUT = 0.4  
