@@ -266,3 +266,22 @@ EX: EUR/USD vs JPY/USD relationship shifted, we can check the degree of relation
 - The graph transformer will also compute edge relationships via the difference of Xn - Xm for n and m are node indices and X corresponds to the set of all initial vectors corresponding to each node.
 
 Limitation: the tradeoff is that without node-centric methods, we don't have ways of accessing higher order information since the nodes themselves only retain raw information and aren't updated at any stage. Thus, it only learns how to optimize graph configurations at the 1st level as opposed to capturing anything with higher dimensionality. Whether that tradeoff is a worthy pursuit could be a central question to investigate for the remainder of this project.
+
+### 6-04-2026 Test Run 1
+*** Table ***
+| model          | MAE    | RMSE   | DirAcc | IC    |
+|----------------|--------|--------|--------|-------|
+| graph model    | 0.2006 | 0.2536 | 0.563  | 0.004 |
+| plain GRU      | 0.2038 | 0.2536 | 0.453  | 0.023 |
+| zero           | 0.2013 | 0.2535 | —      | —     |
+| mean-reversion | 0.2010 | 0.2503 | 0.655  | 0.492 |
+*** Benchmark Performance *** 
+- The Graph GRU trained and operated cleanly but with no ranking ability (IC = 0.004). 
+- The Graph GRU performed below the mean reverting benchmark (0.004 vs 0.49) by a significant margin. Thus, directionally the model was inaccurate. 
+- The Graph GRU beat the No Graph GRU by (0.56 vs 0.45) on directional forecasting, a significant improvement. While the No Graph GRU performed better on DirAcc than Graph GRU (0.023 vs 0.004), it' within the 0.02 threshold for noise, so it's not as interpretable. 
+*** Overfitting Risk ***
+- Model performance degradation is unlikely to be caused by overfitting since train and val decreased in tandem without significant divergences. Val loss flattened rather than increasing after the initial decrease (0.082 -> 0.04) and stayed there for 12 epochs, hitting the stop condition. 
+*** Diagnosis ***
+- The model had not received any pair-wise correlations as the input features. To reconstruct from scratch is innately difficult and perhaps the 20 day look back window is partially why the algorithm is so dominated by mean reversion. 
+- I had misspecified the dates of testing period. This first iteration had only tested on 2024. For subsequent tests, they will extend to 2026. 
+

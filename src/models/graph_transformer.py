@@ -26,8 +26,11 @@ class FXEdgeTransformer(nn.Module):
         super().__init__()
 
         # preserve dimensionality compress down the line 
+        # RUN 002: edge birth input = [feature diff (3), rho_trail, d_rho_trail]
+        # — each edge now starts knowing its own pair's measured relationship
+        # (trailing 20d correlation) and where it's heading (its recent change).
         self.edge_init = nn.ModuleList([
-            nn.Linear(D_INPUT, D_EDGE)
+            nn.Linear(D_INPUT + 2, D_EDGE)
             for _ in range(NUM_EDGES)
         ])
 
@@ -70,11 +73,12 @@ class FXEdgeTransformer(nn.Module):
         self.norm1 = nn.ModuleList([nn.LayerNorm(D_EDGE) for _ in range(NUM_EDGES)])
         self.norm2 = nn.ModuleList([nn.LayerNorm(D_EDGE) for _ in range(NUM_EDGES)])
 
-    def forward(self, x, nan_mask):
+    def forward(self, x, nan_mask, edge_feats):
         """
         Forward pass
-            x: one day of features [25, 3] — 25 nodes x [pct_change, level z, vol]  
+            x: one day of features [25, 3] — 25 nodes x [pct_change, level z, vol]
             nan_mask: masking proper, TRUE = masked
+            edge_feats: [6, 2] per-edge [rho_trail, d_rho_trail] of the edge's pair
         Only preserve 6 directed edges between 3 target nodes. Remaining nodes remain for context and aren't related to any except target nodes.
         """
     
@@ -91,8 +95,8 @@ class FXEdgeTransformer(nn.Module):
         for idx, (i, j) in enumerate(TARGET_EDGES):
  
             # initialize edges: differencing captures directional relationality
-            diff = x[i] - x[j]                        
-            e    = self.edge_init[idx](diff)           # [3] diff -> [64] edge state (expansion)
+            diff = torch.cat([x[i] - x[j], edge_feats[idx]])   # [5]
+            e    = self.edge_init[idx](diff)           # [5] -> [64] edge state (expansion)
  
             # independent Q weight per edge 
             q = self.W_Q[idx](e)                       
@@ -150,3 +154,39 @@ class FXEdgeTransformer(nn.Module):
  
         return edge_repr, attn_weights
 
+
+# ---------------------------------------------------------------------------
+# Self-test: runs ONLY when this file is executed directly
+# (`python graph_transformer.py`). Never runs on import / during training.
+# Verifies the NaN-safe masking: finite outputs and gradients under
+# (1) all 25 nodes masked — the pre-2007 worst case that NaN'd the old
+#     -inf version, (2) a realistic partial mask, (3) no mask.
+# Rerun after any change to the attention block.
+# ---------------------------------------------------------------------------
+if __name__ == '__main__':
+    torch.manual_seed(0)
+
+    def _check(label, nan_mask):
+        model = FXEdgeTransformer()
+        x = torch.randn(25, D_INPUT, requires_grad=True)
+        ef = torch.randn(6, 2)
+        edge_repr, attn = model(x, nan_mask, ef)
+        edge_repr.pow(2).mean().backward()      # NaNs usually detonate here
+        ok = (torch.isfinite(edge_repr).all()
+              and torch.isfinite(attn).all()
+              and torch.isfinite(x.grad).all())
+        print(f"[{label}] outputs/attn/grads finite: {bool(ok)}")
+        return attn, bool(ok)
+
+    attn_w, ok1 = _check("all 25 masked (worst case)", torch.ones(25, dtype=torch.bool))
+    ok1 &= bool((attn_w.sum(-1).abs() < 1e-6).all())          # dead rows sum to 0
+
+    partial = torch.zeros(25, dtype=torch.bool)
+    partial[[5, 9, 14, 20, 22, 23, 24]] = True
+    attn_p, ok2 = _check("7 of 25 masked (realistic)", partial)
+    ok2 &= bool((attn_p[:, :, torch.where(partial)[0]] == 0).all())  # masked = exactly 0
+    ok2 &= bool(((attn_p.sum(-1) - 1).abs() < 1e-4).all())           # live rows sum to 1
+
+    _, ok3 = _check("no mask (sanity)", None)
+
+    print("ALL CHECKS PASS" if (ok1 and ok2 and ok3) else "FAILED — do not train")

@@ -1,21 +1,24 @@
 """
+evaluate.py — the judge. Scores the trained FXRegimeModel on the untouched
+test period (2024) against baselines, and exports attention maps for the
+regime-fingerprint analysis.
+
 Baselines:
   zero            predict no correlation shift (strong null)
   mean-reversion  predict the negative of the most recent realized shift
   plain GRU       same task, raw target-node features, NO graph (the
                   ablation that isolates what the graph buys)
-
-Metrics per pair + mean: MAE, RMSE, directional accuracy, Pearson IC.
 """
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 from pathlib import Path
-from src.training.train_graph import (FXRegimeModel, build_targets, valid_ts,
-                                      resolve_data_dir, CORR_W, WINDOWS_PER_CHUNK)
-from src.models.edge_gru import SEQ_LEN
 
+from src.training.train_graph import (FXRegimeModel, build_targets, build_edge_feats,
+                                      valid_ts, resolve_data_dir, CORR_W,
+                                      WINDOWS_PER_CHUNK, RESIDUAL)
+from src.models.edge_gru import SEQ_LEN
 
 CKPT       = Path('checkpoints/best_model.pt')
 ATTN_OUT   = Path('checkpoints/attn_test.npz')
@@ -37,11 +40,12 @@ def load_everything():
     names = pd.read_csv(data_dir / 'node_names.csv')['0'].values
 
     ck = torch.load(CKPT, weights_only=False)
-    mu, sd = ck['mu'], ck['sd'] # train-period stats, frozen
+    mu, sd = ck['mu'], ck['sd']                      # train-period stats, frozen
     Xs = ((X - mu) / sd).astype(np.float32)
     Xs[M] = 0.0
 
     tgt = build_targets(X)
+    EF = build_edge_feats(X)
     train_hi = int(np.where(dates <= pd.Timestamp('2021-12-31'))[0].max())
     val_hi   = int(np.where(dates <= pd.Timestamp('2023-12-31'))[0].max())
     ts_tr = valid_ts(0, train_hi, tgt)
@@ -51,7 +55,7 @@ def load_everything():
     model = FXRegimeModel().to(DEVICE)
     model.load_state_dict(ck['model'])
     model.eval()
-    return Xs, M, tgt, ts_tr, ts_va, ts_te, dates, names, model
+    return Xs, M, EF, tgt, ts_tr, ts_va, ts_te, dates, names, model
 
 
 def chunked_preds(forward_fn, ts, n=WINDOWS_PER_CHUNK):
@@ -69,12 +73,13 @@ def chunked_preds(forward_fn, ts, n=WINDOWS_PER_CHUNK):
     return preds, attns
 
 
-def model_forward_factory(model, Xs, M):
+def model_forward_factory(model, Xs, M, EF):
     def f(block):
         d0, d1 = int(block[0]) - SEQ_LEN + 1, int(block[-1])
         Xd = torch.from_numpy(Xs[d0:d1 + 1]).to(DEVICE)
         Md = torch.from_numpy(M[d0:d1 + 1]).to(DEVICE)
-        p, a = model.forward_chunk(Xd, Md)
+        Ed = torch.from_numpy(EF[d0:d1 + 1]).to(DEVICE)
+        p, a = model.forward_chunk(Xd, Md, Ed)
         keep = block - block[0]
         return p[keep], a[keep + SEQ_LEN - 1]        # attn of each prediction DAY
     return f
@@ -108,7 +113,7 @@ def print_table(rows):
         print('-' * len(hdr))
 
 
-# thresholding for comparison
+# baseline general
 def baseline_zero(ts, tgt):
     return np.zeros((len(ts), 3), dtype=np.float32)
 
@@ -125,10 +130,12 @@ def baseline_mean_reversion(ts, X):
 
 
 class PlainGRU(nn.Module):
-    """No-graph control: raw [20, 9] target-node features -> 3 predictions."""
+    """No-graph control: SAME information as the graph model (raw target-node
+    features + the 3 pairs' [rho_trail, d_rho] = 15 inputs), no graph. Any
+    edge the graph model shows over this is attributable to architecture."""
     def __init__(self):
         super().__init__()
-        self.gru = nn.GRU(9, BASE_HIDDEN, batch_first=True)
+        self.gru = nn.GRU(15, BASE_HIDDEN, batch_first=True)
         self.drop = nn.Dropout(0.4)
         self.head = nn.Linear(BASE_HIDDEN, 3)
 
@@ -137,14 +144,16 @@ class PlainGRU(nn.Module):
         return self.head(self.drop(h.squeeze(0)))
 
 
-def raw_windows(Xs, block):
+def raw_windows(Xs, EF, block):
     d0, d1 = int(block[0]) - SEQ_LEN + 1, int(block[-1])
-    days = torch.from_numpy(Xs[d0:d1 + 1, :3, :].reshape(d1 - d0 + 1, 9))
+    raw = Xs[d0:d1 + 1, :3, :].reshape(d1 - d0 + 1, 9)
+    ef  = EF[d0:d1 + 1, [0, 2, 4], :].reshape(d1 - d0 + 1, 6)   # one per pair
+    days = torch.from_numpy(np.concatenate([raw, ef], axis=1))
     w = torch.stack([days[i:i + SEQ_LEN] for i in range(len(days) - SEQ_LEN + 1)])
     return w[(block - block[0])].to(DEVICE)
 
 
-def train_plain_gru(Xs, tgt, ts_tr, ts_va):
+def train_plain_gru(Xs, EF, tgt, ts_tr, ts_va):
     torch.manual_seed(0)
     net = PlainGRU().to(DEVICE)
     opt = torch.optim.AdamW(net.parameters(), lr=3e-4, weight_decay=1e-2)
@@ -154,13 +163,13 @@ def train_plain_gru(Xs, tgt, ts_tr, ts_va):
         for c0 in range(0, len(ts_tr), WINDOWS_PER_CHUNK):
             block = ts_tr[c0:c0 + WINDOWS_PER_CHUNK]
             y = torch.from_numpy(tgt[block]).to(DEVICE)
-            loss = nn.functional.huber_loss(net(raw_windows(Xs, block)), y)
+            loss = nn.functional.huber_loss(net(raw_windows(Xs, EF, block)), y)
             opt.zero_grad(); loss.backward(); opt.step()
         net.eval()
         with torch.no_grad():
             va = float(np.mean([
                 float(nn.functional.huber_loss(
-                    net(raw_windows(Xs, ts_va[c0:c0 + WINDOWS_PER_CHUNK])),
+                    net(raw_windows(Xs, EF, ts_va[c0:c0 + WINDOWS_PER_CHUNK])),
                     torch.from_numpy(tgt[ts_va[c0:c0 + WINDOWS_PER_CHUNK]]).to(DEVICE)))
                 for c0 in range(0, len(ts_va), WINDOWS_PER_CHUNK)]))
         if va < best:
@@ -174,7 +183,7 @@ def train_plain_gru(Xs, tgt, ts_tr, ts_va):
     return net
 
 
-# attention output
+# attention diagnostics
 def attention_report(attns, names):
     """attns: [D, 6, H, 25] over test days."""
     A = attns.mean(axis=2)                           # [D, 6, 25] head-avg
@@ -190,19 +199,22 @@ def attention_report(attns, names):
 
 # main
 def main():
-    Xs, M, tgt, ts_tr, ts_va, ts_te, dates, names, model = load_everything()
+    Xs, M, EF, tgt, ts_tr, ts_va, ts_te, dates, names, model = load_everything()
     X_raw = np.load(resolve_data_dir() / 'X.npy').astype(np.float32)
     true = tgt[ts_te]
     print(f"test predictions: {len(ts_te)}  ({dates[ts_te[0]].date()} → {dates[ts_te[-1]].date()})")
 
-    preds, attns = chunked_preds(model_forward_factory(model, Xs, M), ts_te)
+    preds, attns = chunked_preds(model_forward_factory(model, Xs, M, EF), ts_te)
     rows = [('graph model', metrics(preds, true)),
-            ('zero', metrics(baseline_zero(ts_te, tgt), true)),
-            ('mean-reversion', metrics(baseline_mean_reversion(ts_te, X_raw), true))]
+            ('zero', metrics(baseline_zero(ts_te, tgt), true))]
+    if RESIDUAL:
+        print("target is MR-residual: mean-reversion baseline == zero, row omitted")
+    else:
+        rows.append(('mean-reversion', metrics(baseline_mean_reversion(ts_te, X_raw), true)))
 
     print("training plain-GRU baseline (no graph)...")
-    base = train_plain_gru(Xs, tgt, ts_tr, ts_va)
-    base_preds, _ = chunked_preds(lambda b: (base(raw_windows(Xs, b)), None), ts_te)
+    base = train_plain_gru(Xs, EF, tgt, ts_tr, ts_va)
+    base_preds, _ = chunked_preds(lambda b: (base(raw_windows(Xs, EF, b)), None), ts_te)
     rows.insert(1, ('plain GRU', metrics(base_preds, true)))
 
     print_table(rows)
