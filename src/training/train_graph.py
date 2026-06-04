@@ -7,7 +7,7 @@ Pipeline per step:
   -> Huber loss vs forward corr-shift targets + orthogonality penalty.
 
 Anti-overfit stack: tiny dims, dropout, shared FFN/K/V, differential
-weight decay, early stopping w/ best-checkpoint restore, purged targets,
+weight decay, early stopping with best-checkpoint restore, purged targets,
 train-stats-only feature standardization, grad clipping.
 
 Run from repo root:  python -m src.training.train_graph
