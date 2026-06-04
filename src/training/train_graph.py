@@ -20,7 +20,7 @@ from pathlib import Path
 from src.models.graph_transformer import FXEdgeTransformer, NUM_EDGES
 from src.models.edge_gru import EdgeGRU, SEQ_LEN, PAIR_EDGES
 
-# ----------------------------- config --------------------------------------
+# config
 CORR_W        = 20          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
 TARGET_PAIRS  = [(0, 1), (0, 2), (1, 2)]   # node pairs: EUR-GBP, EUR-JPY, GBP-JPY
 LR            = 3e-4
@@ -39,7 +39,7 @@ CKPT_DIR      = Path('checkpoints')
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-# ----------------------------- model ---------------------------------------
+# modelling proper
 class FXRegimeModel(nn.Module):
     """Transformer (spatial, per day) + EdgeGRU (temporal) end to end."""
     def __init__(self):
@@ -67,7 +67,7 @@ class FXRegimeModel(nn.Module):
         return preds, attns
 
 
-# ----------------------------- data ----------------------------------------
+# data
 def resolve_data_dir():
     for c in (Path(__file__).parent.parent.parent / 'data', Path('data')):
         if (c / 'X.npy').exists():
@@ -118,7 +118,7 @@ def load_real(data_dir):
     return Xs, M, tgt, valid_ts(0, train_hi, tgt), valid_ts(train_hi + 1, val_hi, tgt), mu, sd
 
 
-# ----------------------------- loss ----------------------------------------
+# huber loss and joint penalties
 def huber(pred, target, delta):
     err = (pred - target).abs()
     quad = 0.5 * err ** 2
@@ -128,14 +128,14 @@ def huber(pred, target, delta):
 
 def ortho_penalty(attns, eps=1e-8):
     """Push the 6 edges' attention patterns apart. attns: [D, 6, H, 25]."""
-    A = attns.mean(dim=2)                                     # [D, 6, 25]
+    A = attns.mean(dim=2)                  
     A = A / (A.norm(dim=-1, keepdim=True) + eps)
-    G = torch.bmm(A, A.transpose(1, 2))                       # [D, 6, 6] cosine grid
+    G = torch.bmm(A, A.transpose(1, 2)) # [D, 6, 6] cosine grid
     off = G - torch.eye(NUM_EDGES, device=G.device)
     return (off ** 2).mean()
 
 
-# ----------------------------- training ------------------------------------
+# training
 def run_split(model, Xs, M, tgt, ts, delta, train=False, opt=None, rng=None):
     """One pass over the given prediction dates, in contiguous chunks."""
     model.train() if train else model.eval()
