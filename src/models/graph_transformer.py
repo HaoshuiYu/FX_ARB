@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 NUM_EDGES   = 6
-D_INPUT     = 75
+D_INPUT     = 3   # per-node width: [return, level z-score, vol] — matches X.npy [T, 25, 3]
 D_MODEL     = 32
 D_EDGE      = 64
 NUM_HEADS   = 4
@@ -62,7 +62,7 @@ class FXEdgeTransformer(nn.Module):
     def forward(self, x, nan_mask):
         """
         Forward pass
-            x: input of [pct_change, lvl, rolling_lvl] of dimensions [25, 75]  
+            x: one day of features [25, 3] — 25 nodes x [pct_change, level z, vol]  
             nan_mask: masking proper, TRUE = masked
         Only preserve 6 directed edges between 3 target nodes. Remaining nodes remain for context and aren't related to any except target nodes.
         """
@@ -81,7 +81,7 @@ class FXEdgeTransformer(nn.Module):
  
             # initialize edges: differencing captures directional relationality
             diff = x[i] - x[j]                        
-            e    = self.edge_init[idx](diff)           # [75, 64] compression
+            e    = self.edge_init[idx](diff)           # [3] diff -> [64] edge state (expansion)
  
             # independent Q weight per edge 
             q = self.W_Q[idx](e)                       
@@ -139,19 +139,13 @@ class FXEdgeTransformer(nn.Module):
 
 
 # ---------------------------------------------------------------------------
-# Self-test: runs ONLY when this file is executed directly
-# (`python graph_transformer.py`). Never runs on import / during training.
-# Verifies the NaN-safe masking: finite outputs and gradients under
-# (1) all 25 nodes masked — the pre-2007 worst case that NaN'd the old
-#     -inf version, (2) a realistic partial mask, (3) no mask.
-# Rerun after any change to the attention block.
-# ---------------------------------------------------------------------------
+# guards against NaN explosion which would silently occur. Manual implementation...
 if __name__ == '__main__':
     torch.manual_seed(0)
 
     def _check(label, nan_mask):
         model = FXEdgeTransformer()
-        x = torch.randn(25, 75, requires_grad=True)
+        x = torch.randn(25, D_INPUT, requires_grad=True)
         edge_repr, attn = model(x, nan_mask)
         edge_repr.pow(2).mean().backward()      # NaNs usually detonate here
         ok = (torch.isfinite(edge_repr).all()
