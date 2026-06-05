@@ -1,7 +1,7 @@
-# build: RUN-003 (fitted-beta residual target) — if this line is missing, the file is stale
+# build: RUN-004B (sterilized target + quarterly IC) — if missing, file is stale
 """
 evaluate.py — the judge. Scores the trained FXRegimeModel on the untouched
-test period (2024) against baselines, and exports attention maps for the
+test period (2026) against baselines, and exports attention maps for the
 regime-fingerprint analysis.
 
 Baselines:
@@ -124,21 +124,22 @@ def baseline_zero(ts, tgt):
     return np.zeros((len(ts), 3), dtype=np.float32)
 
 
-def baseline_calibrated_mr(X, tgt, ts_tr, ts_te):
-    """Predict c * last_shift with c fitted per pair on TRAIN dates against
-    the CURRENT target. On the fitted-residual target this should score
-    ~zero by construction — its row is the certificate that the mechanical
-    component was actually removed. Anything the models score above it is
-    the believable part."""
+def baseline_calibrated_lin(X, tgt, ts_tr, ts_te):
+    """THE CERTIFICATE: the free trick itself — OLS on [1, trail, shift],
+    fitted on TRAIN against the current target, scored on test. On the
+    sterilized target it must sit ~0; its row proves the cheap channels are
+    out of the answer key. Model skill = whatever clears this row."""
     trail = trailing_corr(X)
     ls = np.full_like(trail, np.nan)
     ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
     pred = np.zeros((len(ts_te), tgt.shape[1]), dtype=np.float32)
     for p in range(tgt.shape[1]):
-        m = np.isfinite(tgt[ts_tr, p]) & np.isfinite(ls[ts_tr, p])
-        y, x = tgt[ts_tr, p][m], ls[ts_tr, p][m]
-        c = float((y * x).sum() / max((x * x).sum(), 1e-12))
-        pred[:, p] = c * np.nan_to_num(ls[ts_te, p])
+        m = (np.isfinite(tgt[ts_tr, p]) & np.isfinite(trail[ts_tr, p])
+             & np.isfinite(ls[ts_tr, p]))
+        A = np.column_stack([np.ones(m.sum()), trail[ts_tr, p][m], ls[ts_tr, p][m]])
+        coef, *_ = np.linalg.lstsq(A, tgt[ts_tr, p][m], rcond=None)
+        pred[:, p] = (coef[0] + coef[1] * np.nan_to_num(trail[ts_te, p])
+                      + coef[2] * np.nan_to_num(ls[ts_te, p]))
     return pred
 
 
@@ -207,6 +208,25 @@ def train_plain_gru(Xs, EF, tgt, ts_tr, ts_va):
     return net
 
 
+def quarterly_ic(dates_te, name, pred, true):
+    """Per-quarter IC (mean across pairs). Exposes episode concentration:
+    if one quarter carries the whole score, the 'skill' is one event."""
+    q = pd.PeriodIndex(pd.DatetimeIndex(dates_te), freq='Q')
+    out = [f"quarterly IC — {name}:"]
+    for per in q.unique():
+        m = (q == per)
+        if m.sum() < 8:
+            out.append(f"  {per} n={int(m.sum())} (too few)")
+            continue
+        ics = []
+        for p in range(true.shape[1]):
+            tp, pp = true[m, p], pred[m, p]
+            ics.append(np.corrcoef(pp, tp)[0, 1]
+                       if pp.std() > 1e-12 and tp.std() > 1e-12 else 0.0)
+        out.append(f"  {per}: IC {np.mean(ics):+.3f} (n={int(m.sum())})")
+    print('\n'.join(out))
+
+
 # ----------------------------- attention readout ----------------------------
 def attention_report(attns, names):
     """attns: [D, 6, H, 25] over test days."""
@@ -231,7 +251,7 @@ def main():
     preds, attns = chunked_preds(model_forward_factory(model, Xs, M, EF), ts_te)
     rows = [('graph model', metrics(preds, true)),
             ('zero', metrics(baseline_zero(ts_te, tgt), true)),
-            ('calibrated-MR', metrics(baseline_calibrated_mr(X_raw, tgt, ts_tr, ts_te), true))]
+            ('calibrated-lin', metrics(baseline_calibrated_lin(X_raw, tgt, ts_tr, ts_te), true))]
 
     print("training plain-GRU baseline (no graph)...")
     base = train_plain_gru(Xs, EF, tgt, ts_tr, ts_va)
@@ -239,7 +259,10 @@ def main():
     rows.insert(1, ('plain GRU', metrics(base_preds, true)))
 
     print_table(rows)
-    attention_report(attns, names)
+    d_te = dates[ts_te]
+    quarterly_ic(d_te, 'graph model', preds, true)
+    quarterly_ic(d_te, 'plain GRU', base_preds, true)
+    quarterly_ic(d_te, 'calibrated-lin', baseline_calibrated_lin(X_raw, tgt, ts_tr, ts_te), true)
     np.savez(ATTN_OUT, attn=attns, dates=dates[ts_te].astype(str), preds=preds, true=true)
     print(f"\nattention maps + predictions saved -> {ATTN_OUT} (for inspect_attention.ipynb)")
 

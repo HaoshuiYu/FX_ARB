@@ -1,4 +1,4 @@
-# build: RUN-003 (fitted-beta residual target) — if this line is missing, the file is stale
+# build: RUN-004B (sterilized target + quarterly IC) — if missing, file is stale
 """
 train_graph.py — end-to-end training for the FX regime model.
 
@@ -24,7 +24,7 @@ from src.models.edge_gru import EdgeGRU, SEQ_LEN, PAIR_EDGES
 
 # ----------------------------- config --------------------------------------
 CORR_W        = 20
-RESIDUAL      = True        # RUN 003: target = residual after FITTED reversion (beta from train)          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
+RESIDUAL      = True        # RUN 004: target = residual after OLS on [trail level, recent shift]          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
 TARGET_PAIRS  = [(0, 1), (0, 2), (1, 2)]   # node pairs: EUR-GBP, EUR-JPY, GBP-JPY
 LR            = 3e-4
 WD_TRANSFORMER= 1e-3        # differential weight decay: lighter on the spatial encoder
@@ -89,32 +89,33 @@ def trailing_corr(X):
 
 
 def build_targets(X, train_hi=None):
-    """RUN 003 target. Raw shift: fwd - trail. If RESIDUAL, subtract the
-    FITTED reversion: residual = raw - beta_hat * last_shift, with beta_hat
-    estimated per pair by OLS on TRAIN dates only. Run 002's flaw was
-    assuming beta = -1 (full snap-back); reversion is partial, so a
-    mechanically predictable chunk ~ (1+beta)*last_shift remained in the
-    target and was recoverable from the d_rho input feature. Fitting beta
-    removes exactly the measured mechanical part. beta_hat is printed at
-    build time: |beta_hat| well below 1 confirms the run-002 contamination
-    diagnosis."""
+    """RUN 004 target: the part of the forward shift that NO hand-fed trailing
+    feature can explain. Per pair, OLS on train only:
+        raw_shift ~ c0 + c1 * trail_level + c2 * recent_shift
+    target = raw_shift - that fit. By construction the target is orthogonal
+    (on train) to both correlation features we feed the model, so neither
+    "it just moved, it'll give some back" (run-002 leak) nor "it's sitting
+    high, it'll drift down" (run-003 suspect) can earn points. Any feature
+    added to the model later must be added to this regression too.
+    Coefficients are printed at build time as the diagnostic record."""
     T = X.shape[0]
     trail = trailing_corr(X)
     fwd = np.full_like(trail, np.nan)
     fwd[:T - CORR_W] = trail[CORR_W:]
     tgt = fwd - trail
     if RESIDUAL:
-        assert train_hi is not None, "fitted residual needs train_hi"
+        assert train_hi is not None, "sterilized target needs train_hi"
         ls = np.full_like(trail, np.nan)
         ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
-        betas = []
         for p in range(tgt.shape[1]):
-            m = np.isfinite(tgt[:train_hi + 1, p]) & np.isfinite(ls[:train_hi + 1, p])
-            y, x = tgt[:train_hi + 1, p][m], ls[:train_hi + 1, p][m]
-            betas.append(float((y * x).sum() / max((x * x).sum(), 1e-12)))
-        print(f"fitted reversion beta per pair: {np.round(betas, 3)} "
-              f"(run-002 implicitly assumed -1.0)")
-        tgt = tgt - np.array(betas) * np.nan_to_num(ls, nan=np.nan)
+            m = (np.isfinite(tgt[:train_hi + 1, p]) &
+                 np.isfinite(trail[:train_hi + 1, p]) &
+                 np.isfinite(ls[:train_hi + 1, p]))
+            A = np.column_stack([np.ones(m.sum()), trail[:train_hi + 1, p][m],
+                                 ls[:train_hi + 1, p][m]])
+            coef, *_ = np.linalg.lstsq(A, tgt[:train_hi + 1, p][m], rcond=None)
+            print(f"pair {p} sterilizer [c0, level, shift]: {np.round(coef, 4)}")
+            tgt[:, p] = tgt[:, p] - (coef[0] + coef[1] * trail[:, p] + coef[2] * ls[:, p])
     return tgt.astype(np.float32)
 
 
