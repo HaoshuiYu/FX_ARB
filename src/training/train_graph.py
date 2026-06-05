@@ -1,3 +1,4 @@
+# build: RUN-003 (fitted-beta residual target) — if this line is missing, the file is stale
 """
 train_graph.py — end-to-end training for the FX regime model.
 
@@ -7,7 +8,7 @@ Pipeline per step:
   -> Huber loss vs forward corr-shift targets + orthogonality penalty.
 
 Anti-overfit stack: tiny dims, dropout, shared FFN/K/V, differential
-weight decay, early stopping with best-checkpoint restore, purged targets,
+weight decay, early stopping w/ best-checkpoint restore, purged targets,
 train-stats-only feature standardization, grad clipping.
 
 Run from repo root:  python -m src.training.train_graph
@@ -17,11 +18,13 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from pathlib import Path
+
 from src.models.graph_transformer import FXEdgeTransformer, NUM_EDGES
 from src.models.edge_gru import EdgeGRU, SEQ_LEN, PAIR_EDGES
 
-# config
-CORR_W        = 20          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
+# ----------------------------- config --------------------------------------
+CORR_W        = 20
+RESIDUAL      = True        # RUN 003: target = residual after FITTED reversion (beta from train)          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
 TARGET_PAIRS  = [(0, 1), (0, 2), (1, 2)]   # node pairs: EUR-GBP, EUR-JPY, GBP-JPY
 LR            = 3e-4
 WD_TRANSFORMER= 1e-3        # differential weight decay: lighter on the spatial encoder
@@ -39,7 +42,7 @@ CKPT_DIR      = Path('checkpoints')
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-# modelling proper
+# ----------------------------- model ---------------------------------------
 class FXRegimeModel(nn.Module):
     """Transformer (spatial, per day) + EdgeGRU (temporal) end to end."""
     def __init__(self):
@@ -47,11 +50,11 @@ class FXRegimeModel(nn.Module):
         self.transformer = FXEdgeTransformer()
         self.gru = EdgeGRU()
 
-    def encode_days(self, X_days, M_days):
-        """[D, 25, 3], [D, 25] -> edge states [D, 6, 64], attn [D, 6, H, 25]"""
+    def encode_days(self, X_days, M_days, EF_days):
+        """[D, 25, 3], [D, 25], [D, 6, 2] -> states [D, 6, 64], attn [D, 6, H, 25]"""
         states, attns = [], []
         for d in range(X_days.shape[0]):
-            e, a = self.transformer(X_days[d], M_days[d])
+            e, a = self.transformer(X_days[d], M_days[d], EF_days[d])
             states.append(e); attns.append(a)
         return torch.stack(states), torch.stack(attns)
 
@@ -61,13 +64,13 @@ class FXRegimeModel(nn.Module):
         D = states.shape[0]
         return torch.stack([states[i:i + SEQ_LEN] for i in range(D - SEQ_LEN + 1)])
 
-    def forward_chunk(self, X_days, M_days):
-        states, attns = self.encode_days(X_days, M_days)
+    def forward_chunk(self, X_days, M_days, EF_days):
+        states, attns = self.encode_days(X_days, M_days, EF_days)
         preds = self.gru(self.windows_from_states(states))   # [N, 3]
         return preds, attns
 
 
-# data
+# ----------------------------- data ----------------------------------------
 def resolve_data_dir():
     for c in (Path(__file__).parent.parent.parent / 'data', Path('data')):
         if (c / 'X.npy').exists():
@@ -75,17 +78,55 @@ def resolve_data_dir():
     raise FileNotFoundError('X.npy not found (expected in repo data/)')
 
 
-def build_targets(X):
-    """Forward shift in CORR_W-day realized correlation per pair. [T, 3], NaN where undefined."""
+def trailing_corr(X):
+    """Trailing CORR_W-day correlation per pair. [T, 3], NaN where undefined."""
     T = X.shape[0]
-    tgt = np.full((T, len(TARGET_PAIRS)), np.nan, dtype=np.float32)
+    out = np.full((T, len(TARGET_PAIRS)), np.nan, dtype=np.float64)
     for p, (a, b) in enumerate(TARGET_PAIRS):
-        ra, rb = pd.Series(X[:, a, 0]), pd.Series(X[:, b, 0])
-        trail = ra.rolling(CORR_W).corr(rb).to_numpy()        # corr over (t-W+1 .. t]
-        fwd = np.full(T, np.nan, dtype=np.float64)
-        fwd[:T - CORR_W] = trail[CORR_W:]                      # corr over (t+1 .. t+W]
-        tgt[:, p] = (fwd - trail).astype(np.float32)
-    return tgt
+        out[:, p] = pd.Series(X[:, a, 0]).rolling(CORR_W).corr(
+                    pd.Series(X[:, b, 0])).to_numpy()
+    return out
+
+
+def build_targets(X, train_hi=None):
+    """RUN 003 target. Raw shift: fwd - trail. If RESIDUAL, subtract the
+    FITTED reversion: residual = raw - beta_hat * last_shift, with beta_hat
+    estimated per pair by OLS on TRAIN dates only. Run 002's flaw was
+    assuming beta = -1 (full snap-back); reversion is partial, so a
+    mechanically predictable chunk ~ (1+beta)*last_shift remained in the
+    target and was recoverable from the d_rho input feature. Fitting beta
+    removes exactly the measured mechanical part. beta_hat is printed at
+    build time: |beta_hat| well below 1 confirms the run-002 contamination
+    diagnosis."""
+    T = X.shape[0]
+    trail = trailing_corr(X)
+    fwd = np.full_like(trail, np.nan)
+    fwd[:T - CORR_W] = trail[CORR_W:]
+    tgt = fwd - trail
+    if RESIDUAL:
+        assert train_hi is not None, "fitted residual needs train_hi"
+        ls = np.full_like(trail, np.nan)
+        ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
+        betas = []
+        for p in range(tgt.shape[1]):
+            m = np.isfinite(tgt[:train_hi + 1, p]) & np.isfinite(ls[:train_hi + 1, p])
+            y, x = tgt[:train_hi + 1, p][m], ls[:train_hi + 1, p][m]
+            betas.append(float((y * x).sum() / max((x * x).sum(), 1e-12)))
+        print(f"fitted reversion beta per pair: {np.round(betas, 3)} "
+              f"(run-002 implicitly assumed -1.0)")
+        tgt = tgt - np.array(betas) * np.nan_to_num(ls, nan=np.nan)
+    return tgt.astype(np.float32)
+
+
+def build_edge_feats(X):
+    """[T, 6, 2] per-edge [rho_trail, d_rho_trail]; both directions of a pair
+    share values (correlation is symmetric). NaN -> 0 (guarded by valid_ts)."""
+    trail = trailing_corr(X)                                   # [T, 3]
+    d = np.full_like(trail, np.nan)
+    d[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
+    pair_f = np.stack([trail, d], axis=-1)                     # [T, 3, 2]
+    ef = pair_f[:, [0, 0, 1, 1, 2, 2], :]                      # pairs -> 6 edges
+    return np.nan_to_num(ef).astype(np.float32)
 
 
 def standardize(X, M, train_hi):
@@ -101,7 +142,7 @@ def standardize(X, M, train_hi):
 
 def valid_ts(split_lo, split_hi, tgt):
     """Prediction dates t with full lookback and a leak-free forward target."""
-    lo = max(split_lo, SEQ_LEN - 1, CORR_W - 1)
+    lo = max(split_lo, (SEQ_LEN - 1) + (2 * CORR_W - 1))   # window start has valid edge feats
     hi = split_hi - CORR_W                                    # purge: t+W stays inside split
     ts = np.arange(lo, hi + 1)
     return ts[~np.isnan(tgt[ts]).any(axis=1)]
@@ -113,12 +154,14 @@ def load_real(data_dir):
     dates = pd.to_datetime(pd.read_csv(data_dir / 'dates.csv')['0'].values)
     train_hi = int(np.where(dates <= pd.Timestamp('2021-12-31'))[0].max())
     val_hi   = int(np.where(dates <= pd.Timestamp('2023-12-31'))[0].max())
-    tgt = build_targets(X)
+    tgt = build_targets(X, train_hi)
+    EF = build_edge_feats(X)
     Xs, mu, sd = standardize(X, M, train_hi)
-    return Xs, M, tgt, valid_ts(0, train_hi, tgt), valid_ts(train_hi + 1, val_hi, tgt), mu, sd
+    return (Xs, M, EF, tgt, valid_ts(0, train_hi, tgt),
+            valid_ts(train_hi + 1, val_hi, tgt), mu, sd)
 
 
-# huber loss and joint penalties
+# ----------------------------- loss ----------------------------------------
 def huber(pred, target, delta):
     err = (pred - target).abs()
     quad = 0.5 * err ** 2
@@ -128,15 +171,15 @@ def huber(pred, target, delta):
 
 def ortho_penalty(attns, eps=1e-8):
     """Push the 6 edges' attention patterns apart. attns: [D, 6, H, 25]."""
-    A = attns.mean(dim=2)                  
+    A = attns.mean(dim=2)                                     # [D, 6, 25]
     A = A / (A.norm(dim=-1, keepdim=True) + eps)
-    G = torch.bmm(A, A.transpose(1, 2)) # [D, 6, 6] cosine grid
+    G = torch.bmm(A, A.transpose(1, 2))                       # [D, 6, 6] cosine grid
     off = G - torch.eye(NUM_EDGES, device=G.device)
     return (off ** 2).mean()
 
 
-# training
-def run_split(model, Xs, M, tgt, ts, delta, train=False, opt=None, rng=None):
+# ----------------------------- training ------------------------------------
+def run_split(model, Xs, M, EF, tgt, ts, delta, train=False, opt=None, rng=None):
     """One pass over the given prediction dates, in contiguous chunks."""
     model.train() if train else model.eval()
     losses, n = [], WINDOWS_PER_CHUNK
@@ -150,8 +193,9 @@ def run_split(model, Xs, M, tgt, ts, delta, train=False, opt=None, rng=None):
             d0, d1 = int(block[0]) - SEQ_LEN + 1, int(block[-1])
             Xd = torch.from_numpy(Xs[d0:d1 + 1]).to(DEVICE)
             Md = torch.from_numpy(M[d0:d1 + 1]).to(DEVICE)
+            Ed = torch.from_numpy(EF[d0:d1 + 1]).to(DEVICE)
             y  = torch.from_numpy(tgt[block]).to(DEVICE)
-            preds, attns = model.forward_chunk(Xd, Md)
+            preds, attns = model.forward_chunk(Xd, Md, Ed)
             # select the windows whose end-day is in block (handles gaps safely)
             preds = preds[(block - block[0])]
             loss = huber(preds, y, delta) + ORTHO_LAMBDA * ortho_penalty(attns)
@@ -182,7 +226,7 @@ def main():
     torch.manual_seed(SEED); np.random.seed(SEED)
     rng = np.random.default_rng(SEED)
 
-    Xs, M, tgt, ts_tr, ts_va, mu, sd = load_real(resolve_data_dir())
+    Xs, M, EF, tgt, ts_tr, ts_va, mu, sd = load_real(resolve_data_dir())
     delta = torch.from_numpy(
         np.nanpercentile(np.abs(tgt[ts_tr]), HUBER_PCT, axis=0).astype(np.float32)).to(DEVICE)
 
@@ -197,8 +241,8 @@ def main():
     CKPT_DIR.mkdir(exist_ok=True)
 
     for ep in range(1, max_ep + 1):
-        tr = run_split(model, Xs, M, tgt, ts_tr, delta, train=True, opt=opt, rng=rng)
-        va = run_split(model, Xs, M, tgt, ts_va, delta)
+        tr = run_split(model, Xs, M, EF, tgt, ts_tr, delta, train=True, opt=opt, rng=rng)
+        va = run_split(model, Xs, M, EF, tgt, ts_va, delta)
         flag = ''
         if va < best_val:
             best_val, best_ep, bad = va, ep, 0

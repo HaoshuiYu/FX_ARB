@@ -1,3 +1,4 @@
+# build: RUN-003 (fitted-beta residual target) — if this line is missing, the file is stale
 """
 evaluate.py — the judge. Scores the trained FXRegimeModel on the untouched
 test period (2024) against baselines, and exports attention maps for the
@@ -8,6 +9,11 @@ Baselines:
   mean-reversion  predict the negative of the most recent realized shift
   plain GRU       same task, raw target-node features, NO graph (the
                   ablation that isolates what the graph buys)
+
+Metrics per pair + mean: MAE, RMSE, directional accuracy, Pearson IC.
+
+Run from repo root after training:  python -m src.evaluation.evaluate
+Expects checkpoints/best_model.pt from train_graph.py.
 """
 import numpy as np
 import pandas as pd
@@ -15,7 +21,7 @@ import torch
 import torch.nn as nn
 from pathlib import Path
 
-from src.training.train_graph import (FXRegimeModel, build_targets, build_edge_feats,
+from src.training.train_graph import (FXRegimeModel, build_targets, build_edge_feats, trailing_corr,
                                       valid_ts, resolve_data_dir, CORR_W,
                                       WINDOWS_PER_CHUNK, RESIDUAL)
 from src.models.edge_gru import SEQ_LEN
@@ -31,7 +37,7 @@ BASE_MAX_EPOCHS = 100
 BASE_PATIENCE   = 8
 
 
-# helpers
+# ----------------------------- helpers -------------------------------------
 def load_everything():
     data_dir = resolve_data_dir()
     X = np.load(data_dir / 'X.npy').astype(np.float32)
@@ -44,10 +50,10 @@ def load_everything():
     Xs = ((X - mu) / sd).astype(np.float32)
     Xs[M] = 0.0
 
-    tgt = build_targets(X)
-    EF = build_edge_feats(X)
     train_hi = int(np.where(dates <= pd.Timestamp('2021-12-31'))[0].max())
     val_hi   = int(np.where(dates <= pd.Timestamp('2023-12-31'))[0].max())
+    tgt = build_targets(X, train_hi)
+    EF = build_edge_feats(X)
     ts_tr = valid_ts(0, train_hi, tgt)
     ts_va = valid_ts(train_hi + 1, val_hi, tgt)
     ts_te = valid_ts(val_hi + 1, len(dates) - 1, tgt)
@@ -113,9 +119,27 @@ def print_table(rows):
         print('-' * len(hdr))
 
 
-# baseline general
+# ----------------------------- baselines -----------------------------------
 def baseline_zero(ts, tgt):
     return np.zeros((len(ts), 3), dtype=np.float32)
+
+
+def baseline_calibrated_mr(X, tgt, ts_tr, ts_te):
+    """Predict c * last_shift with c fitted per pair on TRAIN dates against
+    the CURRENT target. On the fitted-residual target this should score
+    ~zero by construction — its row is the certificate that the mechanical
+    component was actually removed. Anything the models score above it is
+    the believable part."""
+    trail = trailing_corr(X)
+    ls = np.full_like(trail, np.nan)
+    ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
+    pred = np.zeros((len(ts_te), tgt.shape[1]), dtype=np.float32)
+    for p in range(tgt.shape[1]):
+        m = np.isfinite(tgt[ts_tr, p]) & np.isfinite(ls[ts_tr, p])
+        y, x = tgt[ts_tr, p][m], ls[ts_tr, p][m]
+        c = float((y * x).sum() / max((x * x).sum(), 1e-12))
+        pred[:, p] = c * np.nan_to_num(ls[ts_te, p])
+    return pred
 
 
 def baseline_mean_reversion(ts, X):
@@ -183,7 +207,7 @@ def train_plain_gru(Xs, EF, tgt, ts_tr, ts_va):
     return net
 
 
-# attention diagnostics
+# ----------------------------- attention readout ----------------------------
 def attention_report(attns, names):
     """attns: [D, 6, H, 25] over test days."""
     A = attns.mean(axis=2)                           # [D, 6, 25] head-avg
@@ -197,7 +221,7 @@ def attention_report(attns, names):
         print(f"  {edges[e]:<8} avg survivors/day {survivors:4.1f} | top: {tops}")
 
 
-# main
+# ----------------------------- main -----------------------------------------
 def main():
     Xs, M, EF, tgt, ts_tr, ts_va, ts_te, dates, names, model = load_everything()
     X_raw = np.load(resolve_data_dir() / 'X.npy').astype(np.float32)
@@ -206,11 +230,8 @@ def main():
 
     preds, attns = chunked_preds(model_forward_factory(model, Xs, M, EF), ts_te)
     rows = [('graph model', metrics(preds, true)),
-            ('zero', metrics(baseline_zero(ts_te, tgt), true))]
-    if RESIDUAL:
-        print("target is MR-residual: mean-reversion baseline == zero, row omitted")
-    else:
-        rows.append(('mean-reversion', metrics(baseline_mean_reversion(ts_te, X_raw), true)))
+            ('zero', metrics(baseline_zero(ts_te, tgt), true)),
+            ('calibrated-MR', metrics(baseline_calibrated_mr(X_raw, tgt, ts_tr, ts_te), true))]
 
     print("training plain-GRU baseline (no graph)...")
     base = train_plain_gru(Xs, EF, tgt, ts_tr, ts_va)
