@@ -1,4 +1,4 @@
-# build: RUN-004B (sterilized target + quarterly IC) — if missing, file is stale
+# build: RUN-005-FINAL (raw target, integrated significance) — if missing, stale
 """
 train_graph.py — end-to-end training for the FX regime model.
 
@@ -24,7 +24,8 @@ from src.models.edge_gru import EdgeGRU, SEQ_LEN, PAIR_EDGES
 
 # ----------------------------- config --------------------------------------
 CORR_W        = 20
-RESIDUAL      = True        # RUN 004: target = residual after OLS on [trail level, recent shift]          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
+RESIDUAL      = False       # RUN 005 FINAL: raw forward corr shift — the real question.
+                            # calibrated-lin in eval is the mechanics bar to beat.          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
 TARGET_PAIRS  = [(0, 1), (0, 2), (1, 2)]   # node pairs: EUR-GBP, EUR-JPY, GBP-JPY
 LR            = 3e-4
 WD_TRANSFORMER= 1e-3        # differential weight decay: lighter on the spatial encoder

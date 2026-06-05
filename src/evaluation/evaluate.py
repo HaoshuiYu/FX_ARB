@@ -1,7 +1,7 @@
-# build: RUN-004B (sterilized target + quarterly IC) — if missing, file is stale
+# build: RUN-005-FINAL (raw target, integrated significance) — if missing, stale
 """
 evaluate.py — the judge. Scores the trained FXRegimeModel on the untouched
-test period (2026) against baselines, and exports attention maps for the
+test period (2024) against baselines, and exports attention maps for the
 regime-fingerprint analysis.
 
 Baselines:
@@ -25,6 +25,7 @@ from src.training.train_graph import (FXRegimeModel, build_targets, build_edge_f
                                       valid_ts, resolve_data_dir, CORR_W,
                                       WINDOWS_PER_CHUNK, RESIDUAL)
 from src.models.edge_gru import SEQ_LEN
+from src.evaluation.significance_test import perm_test, ic, block_permute
 
 CKPT       = Path('checkpoints/best_model.pt')
 ATTN_OUT   = Path('checkpoints/attn_test.npz')
@@ -208,6 +209,37 @@ def train_plain_gru(Xs, EF, tgt, ts_tr, ts_va):
     return net
 
 
+def significance_block(true, named_preds):
+    """FINAL VERDICT BLOCK. (1) block-permutation p per model: is its IC
+    distinguishable from shuffled noise? (2) block-bootstrap of the IC margin
+    graph-minus-calibrated-lin: does the architecture beat the 3-number
+    mechanics formula? Pre-registered reading: model p<0.05 = real skill;
+    margin P(>0) >= 0.95 = beats the formula; otherwise tie = decomposition
+    story. Results stand as-is."""
+    rng = np.random.default_rng(0)
+    print("\nSIGNIFICANCE (block permutation, 2000 shuffles)")
+    for name, pred in named_preds:
+        ps, ics = [], []
+        for p in range(true.shape[1]):
+            r, pv = perm_test(pred[:, p], true[:, p], rng)
+            ps.append(pv); ics.append(r)
+        print(f"  {name:<15} mean IC {np.mean(ics):+.4f}   per-pair p = "
+              + ", ".join(f"{v:.3f}" for v in ps))
+
+    g = dict(named_preds)['graph model']; c = dict(named_preds)['calibrated-lin']
+    T = len(true); blocks = np.arange(0, T, 20); diffs = []
+    for _ in range(2000):
+        sel = rng.choice(blocks, size=len(blocks), replace=True)
+        idx = np.concatenate([np.arange(s, min(s + 20, T)) for s in sel])
+        d = [ic(g[idx, p], true[idx, p]) - ic(c[idx, p], true[idx, p])
+             for p in range(true.shape[1])]
+        diffs.append(np.mean(d))
+    diffs = np.array(diffs)
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    print(f"  graph minus calibrated-lin: mean IC margin {diffs.mean():+.4f}, "
+          f"95% CI [{lo:+.3f}, {hi:+.3f}], P(margin>0) = {(diffs > 0).mean():.3f}")
+
+
 def quarterly_ic(dates_te, name, pred, true):
     """Per-quarter IC (mean across pairs). Exposes episode concentration:
     if one quarter carries the whole score, the 'skill' is one event."""
@@ -259,10 +291,13 @@ def main():
     rows.insert(1, ('plain GRU', metrics(base_preds, true)))
 
     print_table(rows)
+    lin_preds = baseline_calibrated_lin(X_raw, tgt, ts_tr, ts_te)
+    significance_block(true, [('graph model', preds), ('plain GRU', base_preds),
+                              ('calibrated-lin', lin_preds)])
     d_te = dates[ts_te]
     quarterly_ic(d_te, 'graph model', preds, true)
     quarterly_ic(d_te, 'plain GRU', base_preds, true)
-    quarterly_ic(d_te, 'calibrated-lin', baseline_calibrated_lin(X_raw, tgt, ts_tr, ts_te), true)
+    quarterly_ic(d_te, 'calibrated-lin', lin_preds, true)
     np.savez(ATTN_OUT, attn=attns, dates=dates[ts_te].astype(str), preds=preds, true=true)
     print(f"\nattention maps + predictions saved -> {ATTN_OUT} (for inspect_attention.ipynb)")
 
