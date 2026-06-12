@@ -1,4 +1,4 @@
-# build: RUN-003 (unchanged from 002; banner bumped for fingerprint consistency) — if this line is missing, the file is stale
+# build: RUN-004B (unchanged; banner bumped for fingerprint consistency) — if this line is missing, the file is stale
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

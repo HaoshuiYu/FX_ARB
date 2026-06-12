@@ -285,3 +285,31 @@ Limitation: the tradeoff is that without node-centric methods, we don't have way
 - The model had not received any pair-wise correlations as the input features. To reconstruct from scratch is innately difficult and perhaps the 20 day look back window is partially why the algorithm is so dominated by mean reversion. 
 - I had misspecified the dates of testing period. This first iteration had only tested on 2024. For subsequent tests, they will extend to 2026. 
 
+### 6-05-2026 Test Run 2
+*** Results ***
+model           pair            MAE     RMSE   DirAcc       IC
+--------------------------------------------------------------
+graph model     EUR-GBP      0.1491   0.1846   0.4589   0.6073
+graph model     EUR-JPY      0.1682   0.2063   0.6190   0.4938
+graph model     GBP-JPY      0.1972   0.2441   0.6104   0.3656
+graph model     MEAN         0.1715   0.2117   0.5628   0.4889
+--------------------------------------------------------------
+plain GRU       EUR-GBP      0.1278   0.1700   0.5455   0.6130
+plain GRU       EUR-JPY      0.1853   0.2225   0.4935   0.4883
+plain GRU       GBP-JPY      0.2039   0.2468   0.5714   0.4183
+plain GRU       MEAN         0.1723   0.2131   0.5368   0.5065
+--------------------------------------------------------------
+zero            EUR-GBP      0.1301   0.1796   0.0000   0.0000
+zero            EUR-JPY      0.1793   0.2283   0.0000   0.0000
+zero            GBP-JPY      0.2140   0.2583   0.0000   0.0000
+zero            MEAN         0.1745   0.2221   0.0000   0.0000
+--------------------------------------------------------------
+calibrated-MR   EUR-GBP      0.1302   0.1798   0.4026  -0.2631
+calibrated-MR   EUR-JPY      0.1793   0.2283   0.4848  -0.1150
+calibrated-MR   GBP-JPY      0.2140   0.2583   0.5411   0.0377
+calibrated-MR   MEAN         0.1745   0.2221   0.4762  -0.1135
+--------------------------------------------------------------
+*** Benchmark Performance ***
+- The IC term is too large for the EUR-GBP forecast. To have a Graph Architecture produce forecasts of such accuracy is unlikely and raises alarms.
+- For most architectures, the Graph GRU narrowly outperforms the no Graph GRU. It could be signal but it could also be that the model is learning lower dimensional tricks due to the limited interval of testing being only 1 year. 
+- An additional benchmark Calibrated-MR is added for each category. It's the extent that the weighted correlation between each relevant context node contributes to the forecast. 
