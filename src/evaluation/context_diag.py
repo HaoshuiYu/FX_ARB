@@ -22,7 +22,7 @@ from src.training.train_graph import (build_targets, build_edge_feats, valid_ts,
                                        resolve_data_dir, CORR_W, TARGET_PAIRS)
 
 PULSE_MIN = 0.02                      # min mean val-IC uplift to call it a pulse
-ALPHAS    = [0.1, 1.0, 10.0, 100.0]
+ALPHAS = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5]
 PAIRS     = ['EUR-GBP', 'EUR-JPY', 'GBP-JPY']
 CONTEXT   = list(range(3, 25))        # the 22 non-target nodes
 
