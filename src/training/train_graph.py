@@ -1,18 +1,7 @@
-# build: RUN-005-FINAL (raw target, integrated significance) — if missing, stale
+""""End-to-end training: per-day transformer -> 20-day GRU -> 3 correlation-shift predictions.
 """
-train_graph.py — end-to-end training for the FX regime model.
 
-Pipeline per step:
-  raw days [25, 3] -> FXEdgeTransformer (per day) -> edge states [6, 64]
-  -> 20-day windows -> EdgeGRU -> 3 correlation-shift predictions
-  -> Huber loss vs forward corr-shift targets + orthogonality penalty.
-
-Anti-overfit stack: tiny dims, dropout, shared FFN/K/V, differential
-weight decay, early stopping w/ best-checkpoint restore, purged targets,
-train-stats-only feature standardization, grad clipping.
-
-Run from repo root:  python -m src.training.train_graph
-"""
+import os
 import numpy as np
 import pandas as pd
 import torch
@@ -22,28 +11,29 @@ from pathlib import Path
 from src.models.graph_transformer import FXEdgeTransformer, NUM_EDGES
 from src.models.edge_gru import EdgeGRU, SEQ_LEN, PAIR_EDGES
 
-# ----------------------------- config --------------------------------------
-CORR_W        = 20
-RESIDUAL      = False       # RUN 005 FINAL: raw forward corr shift — the real question.
-                            # calibrated-lin in eval is the mechanics bar to beat.          # realized-correlation window; target = corr(t+1..t+W) - corr(t-W+1..t)
-TARGET_PAIRS  = [(0, 1), (0, 2), (1, 2)]   # node pairs: EUR-GBP, EUR-JPY, GBP-JPY
+# config
+CORR_W        = int(os.environ.get('FX_CORR_W', 20))    # look back 20 days, assumed avg duration for regime shift
+HORIZON       = int(os.environ.get('FX_HORIZON', CORR_W))  # multi-horizon forecast 
+RESIDUAL      = False
+TARGET_PAIRS  = [(0, 1), (0, 2), (1, 2)]   
 LR            = 3e-4
-WD_TRANSFORMER= 1e-3        # differential weight decay: lighter on the spatial encoder
-WD_GRU        = 1e-2        # heavier where memorization risk is highest
-ORTHO_LAMBDA  = 0.05        # orthogonality penalty weight (first knob if attention collapses)
-HUBER_PCT     = 85          # Huber delta = this percentile of |train target|, per pair
+WD_TRANSFORMER = 1e-3 # lighter decay on the spatial encoder
+WD_GRU        = 1e-2 # heavy to avoid overfit
+ORTHO_LAMBDA  = 0.05 # regularize against smoothening (edges resembling each other, losing info)
+HUBER_PCT     = 85 # squared to linear error above 85% target error
 MAX_EPOCHS    = 200
-MIN_EPOCHS    = 15          # floor: early stopping cannot fire before this
-PATIENCE      = 12          # epochs of no val improvement before stopping
+MIN_EPOCHS    = 15
+PATIENCE      = 12
 GRAD_CLIP     = 1.0
-WINDOWS_PER_CHUNK = 64      # contiguous prediction dates per step (shares per-day compute)
-SEED          = 0
+WINDOWS_PER_CHUNK = 64       # contiguous prediction dates per training step
+SEED          = int(os.environ.get('FX_SEED', 0))
 CKPT_DIR      = Path('checkpoints')
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-# ----------------------------- model ---------------------------------------
+
+# modelling proper
 class FXRegimeModel(nn.Module):
     """Transformer (spatial, per day) + EdgeGRU (temporal) end to end."""
     def __init__(self):
@@ -71,13 +61,12 @@ class FXRegimeModel(nn.Module):
         return preds, attns
 
 
-# ----------------------------- data ----------------------------------------
+# data
 def resolve_data_dir():
     for c in (Path(__file__).parent.parent.parent / 'data', Path('data')):
         if (c / 'X.npy').exists():
             return c
     raise FileNotFoundError('X.npy not found (expected in repo data/)')
-
 
 def trailing_corr(X):
     """Trailing CORR_W-day correlation per pair. [T, 3], NaN where undefined."""
@@ -88,24 +77,15 @@ def trailing_corr(X):
                     pd.Series(X[:, b, 0])).to_numpy()
     return out
 
-
 def build_targets(X, train_hi=None):
-    """RUN 004 target: the part of the forward shift that NO hand-fed trailing
-    feature can explain. Per pair, OLS on train only:
-        raw_shift ~ c0 + c1 * trail_level + c2 * recent_shift
-    target = raw_shift - that fit. By construction the target is orthogonal
-    (on train) to both correlation features we feed the model, so neither
-    "it just moved, it'll give some back" (run-002 leak) nor "it's sitting
-    high, it'll drift down" (run-003 suspect) can earn points. Any feature
-    added to the model later must be added to this regression too.
-    Coefficients are printed at build time as the diagnostic record."""
+    """Per-pair target: forward correlation shift, trail[t+HORIZON] - trail[t]."""
     T = X.shape[0]
     trail = trailing_corr(X)
     fwd = np.full_like(trail, np.nan)
-    fwd[:T - CORR_W] = trail[CORR_W:]
+    fwd[:T - HORIZON] = trail[HORIZON:]
     tgt = fwd - trail
     if RESIDUAL:
-        assert train_hi is not None, "sterilized target needs train_hi"
+        assert train_hi is not None, "RESIDUAL mode needs train_hi to fit the sterilizer on train only"
         ls = np.full_like(trail, np.nan)
         ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
         for p in range(tgt.shape[1]):
@@ -142,10 +122,10 @@ def standardize(X, M, train_hi):
     return Xs.astype(np.float32), mu, sd
 
 
-def valid_ts(split_lo, split_hi, tgt):
+def valid_ts(split_lo, split_hi, tgt): 
     """Prediction dates t with full lookback and a leak-free forward target."""
-    lo = max(split_lo, (SEQ_LEN - 1) + (2 * CORR_W - 1))   # window start has valid edge feats
-    hi = split_hi - CORR_W                                    # purge: t+W stays inside split
+    lo = max(split_lo, (SEQ_LEN - 1) + (2 * CORR_W - 1))
+    hi = split_hi - HORIZON # drop dates with h<horizon, can't compute rolling
     ts = np.arange(lo, hi + 1)
     return ts[~np.isnan(tgt[ts]).any(axis=1)]
 
@@ -163,7 +143,7 @@ def load_real(data_dir):
             valid_ts(train_hi + 1, val_hi, tgt), mu, sd)
 
 
-# ----------------------------- loss ----------------------------------------
+# compute loss
 def huber(pred, target, delta):
     err = (pred - target).abs()
     quad = 0.5 * err ** 2
@@ -180,7 +160,7 @@ def ortho_penalty(attns, eps=1e-8):
     return (off ** 2).mean()
 
 
-# ----------------------------- training ------------------------------------
+# training
 def run_split(model, Xs, M, EF, tgt, ts, delta, train=False, opt=None, rng=None):
     """One pass over the given prediction dates, in contiguous chunks."""
     model.train() if train else model.eval()
@@ -249,6 +229,7 @@ def main():
         if va < best_val:
             best_val, best_ep, bad = va, ep, 0
             torch.save({'model': model.state_dict(), 'mu': mu, 'sd': sd,
+                        'frame': {'CORR_W': CORR_W, 'HORIZON': HORIZON, 'SEQ_LEN': SEQ_LEN},
                         'epoch': ep, 'val': va}, CKPT)
             flag = '  <- best (saved)'
         else:
