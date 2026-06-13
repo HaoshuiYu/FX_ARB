@@ -3,14 +3,20 @@ context_diagnostics.py — the gate before the frame sweep.
 
 The graph's only edge over the plain GRU is the 22 non-target currencies. This
 asks whether they carry distinct, lead-lagging signal for the forward
-correlation shift at all, before any wall-clock is spent training graphs.
+correlation shift, BEFORE any graph-training wall-clock is spent.
 
-Method: ridge on TRAIN, IC on VAL, two feature sets per pair —
-  base    = the pair's own [rho_trail, d_rho]            (no context)
-  +context= base plus 22 context nodes' [trailing ret, vol] at t
-If +context lifts val IC by at least PULSE_MIN, there's a pulse and the sweep
-is worth running. If not, the graph is unlikely to help and that's a clean,
-defensible negative on its own.
+Two corrections over the first cut, both needed for the read to mean anything:
+  - sterilized target: the train-only [1, trail, d_rho] fit is removed first, so
+    the mechanical mean-reversion channel (base IC ~0.68 on the raw target) is
+    out of the answer key. base IC should now sit ~0; any +context uplift is
+    real relational signal, not leftover mechanics.
+  - horizon loop: short horizons are a different, less mechanical target AND give
+    more independent blocks. We probe H in {5, 10, 20} so "signal lives at short
+    horizon" and "signal is mechanical, not relational" are tested in one pass.
+
+Estimation window CORR_W is held fixed (label noise constant); only the forecast
+horizon varies. Ridge on TRAIN, IC on VAL. PULSE at any horizon -> sweep is
+justified. FLAT at all three -> defensible negative, stop before training.
 
 Run from repo root:  python -m src.evaluation.context_diagnostics
 """
@@ -18,24 +24,24 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 
-from src.training.train_graph import (build_targets, build_edge_feats, valid_ts,
-                                       resolve_data_dir, CORR_W, TARGET_PAIRS)
+from src.training.train_graph import trailing_corr, resolve_data_dir, CORR_W
 
-PULSE_MIN = 0.02                      # min mean val-IC uplift to call it a pulse
-ALPHAS = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5]
+PULSE_MIN = 0.02
+N_SHUFFLE = 200                                 # context-permutation null draws
+ALPHAS    = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5]
+HORIZONS  = [5, 10, 20]
 PAIRS     = ['EUR-GBP', 'EUR-JPY', 'GBP-JPY']
-CONTEXT   = list(range(3, 25))        # the 22 non-target nodes
+CONTEXT   = list(range(3, 25))                  # the 22 non-target nodes
 
 
 def node_feats(X, t):
-    """[trailing CORR_W return, vol] for every node at day t."""
+    """[trailing CORR_W return, vol] for every node at day t (horizon-free)."""
     ret = X[t - CORR_W + 1:t + 1, :, 0].sum(axis=0)
     vol = X[t, :, 2]
     return np.concatenate([ret, vol])
 
 
 def feature_rows(X, ts):
-    """[len(ts), 50] context-node features (ret+vol for all 25 nodes)."""
     return np.nan_to_num(np.stack([node_feats(X, int(t)) for t in ts]))
 
 
@@ -46,13 +52,12 @@ def ic(pred, true):
 
 
 def ridge(A, y, alpha):
-    """Centered ridge; returns weights (no intercept, data is demeaned)."""
     G = A.T @ A + alpha * np.eye(A.shape[1])
     return np.linalg.solve(G, A.T @ y)
 
 
 def best_val_ic(Atr, ytr, Ava, yva):
-    """Fit per alpha on train, keep the best val IC."""
+    """Standardize on train, fit per alpha, keep best val IC."""
     mu_a, sd_a = Atr.mean(0), Atr.std(0) + 1e-8
     mu_y = ytr.mean()
     Atr, Ava = (Atr - mu_a) / sd_a, (Ava - mu_a) / sd_a
@@ -63,6 +68,84 @@ def best_val_ic(Atr, ytr, Ava, yva):
     return out
 
 
+def sterilized_target(trail, ls, H, train_hi):
+    """Forward H-day shift with the train-only [1, trail, d_rho] fit removed."""
+    T = trail.shape[0]
+    fwd = np.full_like(trail, np.nan)
+    fwd[:T - H] = trail[H:]
+    raw = fwd - trail
+    tgt = raw.copy()
+    rows = np.arange(T)
+    for p in range(trail.shape[1]):
+        m = (rows <= train_hi) & np.isfinite(raw[:, p]) & np.isfinite(trail[:, p]) & np.isfinite(ls[:, p])
+        A = np.column_stack([np.ones(m.sum()), trail[m, p], ls[m, p]])
+        coef, *_ = np.linalg.lstsq(A, raw[m, p], rcond=None)
+        fit = coef[0] + coef[1] * trail[:, p] + coef[2] * ls[:, p]
+        tgt[:, p] = raw[:, p] - fit
+    return tgt
+
+
+def valid_idx(lo, hi, H, tgt):
+    """In-split prediction dates with valid features and a leak-free t+H target."""
+    lo = max(lo, 2 * CORR_W - 1)
+    ts = np.arange(lo, hi - H + 1)
+    return ts[~np.isnan(tgt[ts]).any(axis=1)]
+
+
+def block_perm(n, block, rng):
+    """Row permutation that shuffles contiguous blocks (preserves overlap)."""
+    starts = np.arange(0, n, block)
+    rng.shuffle(starts)
+    return np.concatenate([np.arange(s, min(s + block, n)) for s in starts])
+
+
+def mean_uplift(base, Ftr, Fva, ctx, tgt, ts_tr, ts_va, perm_tr=None, perm_va=None):
+    """Mean over pairs of (base+context IC - base IC). perm_* permute the
+    context rows only, leaving base and target aligned -> the null."""
+    Ctr = Ftr[:, ctx][perm_tr] if perm_tr is not None else Ftr[:, ctx]
+    Cva = Fva[:, ctx][perm_va] if perm_va is not None else Fva[:, ctx]
+    b_ics, f_ics = [], []
+    for p in range(len(PAIRS)):
+        ytr, yva = tgt[ts_tr, p], tgt[ts_va, p]
+        bt, bv = np.nan_to_num(base[ts_tr, p]), np.nan_to_num(base[ts_va, p])
+        b_ics.append(best_val_ic(bt, ytr, bv, yva))
+        f_ics.append(best_val_ic(np.column_stack([bt, Ctr]), ytr,
+                                 np.column_stack([bv, Cva]), yva))
+    return float(np.mean(f_ics) - np.mean(b_ics)), float(np.mean(b_ics)), b_ics, f_ics
+
+
+def run_horizon(X, trail, ls, H, train_hi, val_hi, rng):
+    tgt = sterilized_target(trail, ls, H, train_hi)
+    ts_tr = valid_idx(0, train_hi, H, tgt)
+    ts_va = valid_idx(train_hi + 1, val_hi, H, tgt)
+
+    base = np.stack([trail, ls], axis=-1)                       # [T, 3, 2] per-pair feats
+    Ftr, Fva = feature_rows(X, ts_tr), feature_rows(X, ts_va)
+    ctx = np.concatenate([CONTEXT, [n + 25 for n in CONTEXT]])
+    blk = CORR_W + H
+
+    uplift, base_mean, b_ics, f_ics = mean_uplift(base, Ftr, Fva, ctx, tgt, ts_tr, ts_va)
+
+    # null: same fit with context rows block-shuffled out of time alignment
+    null = np.array([
+        mean_uplift(base, Ftr, Fva, ctx, tgt, ts_tr, ts_va,
+                    block_perm(len(ts_tr), blk, rng), block_perm(len(ts_va), blk, rng))[0]
+        for _ in range(N_SHUFFLE)])
+    p = float((null >= uplift).sum() + 1) / (N_SHUFFLE + 1)
+
+    blocks = len(ts_va) // blk
+    print(f"\nHORIZON {H}d   val obs {len(ts_va)}   (~{blocks} independent val blocks)")
+    print(f"{'pair':<10}{'base IC':>10}{'+ctx IC':>10}{'uplift':>10}")
+    print('-' * 40)
+    for name, b, f in zip(PAIRS, b_ics, f_ics):
+        print(f"{name:<10}{b:>10.4f}{f:>10.4f}{f - b:>+10.4f}")
+    print('-' * 40)
+    print(f"{'MEAN':<10}{base_mean:>10.4f}{np.mean(f_ics):>10.4f}{uplift:>+10.4f}")
+    print(f"shuffle null: mean {null.mean():+.4f}  95th {np.percentile(null, 95):+.4f}  "
+          f"-> real uplift p = {p:.3f}")
+    return H, uplift, base_mean, p
+
+
 def main():
     data_dir = resolve_data_dir()
     X = np.load(data_dir / 'X.npy').astype(np.float32)
@@ -70,36 +153,30 @@ def main():
     train_hi = int(np.where(dates <= pd.Timestamp('2021-12-31'))[0].max())
     val_hi   = int(np.where(dates <= pd.Timestamp('2023-12-31'))[0].max())
 
-    tgt = build_targets(X)
-    EF  = build_edge_feats(X)[:, [0, 2, 4], :]          # one [rho_trail, d_rho] per pair
-    ts_tr = valid_ts(0, train_hi, tgt)
-    ts_va = valid_ts(train_hi + 1, val_hi, tgt)
+    trail = trailing_corr(X)
+    ls = np.full_like(trail, np.nan)
+    ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
 
-    Ftr, Fva = feature_rows(X, ts_tr), feature_rows(X, ts_va)
-    ctx = np.concatenate([CONTEXT, [n + 25 for n in CONTEXT]])   # ret + vol cols
-    base_tr, base_va = EF[ts_tr].reshape(len(ts_tr), -1), EF[ts_va].reshape(len(ts_va), -1)
+    rng = np.random.default_rng(0)
+    print(f"sterilized target | estimation CORR_W={CORR_W} fixed | base IC ~0 | "
+          f"{N_SHUFFLE} shuffle nulls")
+    results = [run_horizon(X, trail, ls, H, train_hi, val_hi, rng) for H in HORIZONS]
 
-    print(f"train obs {len(ts_tr)}  val obs {len(ts_va)}  "
-          f"(~{len(ts_va) // (CORR_W)} independent val blocks)\n")
-    print(f"{'pair':<10}{'base IC':>10}{'+ctx IC':>10}{'uplift':>10}")
-    print('-' * 40)
-
-    base_ics, full_ics = [], []
-    for p, name in enumerate(PAIRS):
-        ytr, yva = tgt[ts_tr, p], tgt[ts_va, p]
-        b = best_val_ic(base_tr[:, 2 * p:2 * p + 2], ytr,
-                        base_va[:, 2 * p:2 * p + 2], yva)
-        full_tr = np.column_stack([base_tr[:, 2 * p:2 * p + 2], Ftr[:, ctx]])
-        full_va = np.column_stack([base_va[:, 2 * p:2 * p + 2], Fva[:, ctx]])
-        f = best_val_ic(full_tr, ytr, full_va, yva)
-        base_ics.append(b); full_ics.append(f)
-        print(f"{name:<10}{b:>10.4f}{f:>10.4f}{f - b:>+10.4f}")
-
-    uplift = float(np.mean(full_ics) - np.mean(base_ics))
-    print('-' * 40)
-    print(f"{'MEAN':<10}{np.mean(base_ics):>10.4f}{np.mean(full_ics):>10.4f}{uplift:>+10.4f}")
-    verdict = "PULSE — run the sweep" if uplift >= PULSE_MIN else "FLAT — graph unlikely to help"
-    print(f"\nmean val-IC uplift {uplift:+.4f}  (threshold {PULSE_MIN:+.4f})  ->  {verdict}")
+    print("\n" + "=" * 52)
+    best = max(results, key=lambda r: r[1])
+    for H, up, base_ic, p in results:
+        real = up >= PULSE_MIN and p < 0.05
+        tag = "PULSE (survives shuffle)" if real else ("flat" if up < PULSE_MIN
+              else "NOISE (uplift in null)")
+        print(f"  H={H:>2}d   uplift {up:+.4f}  p {p:.3f}  (base {base_ic:+.4f})   {tag}")
+    bH, bup, _, bp = best
+    if bup >= PULSE_MIN and bp < 0.05:
+        verdict = f"PULSE at H={bH}d, p={bp:.3f} — sweep justified"
+    elif bup >= PULSE_MIN:
+        verdict = f"uplift at H={bH}d but p={bp:.3f} — noise, NOT justified"
+    else:
+        verdict = "FLAT everywhere — graph unlikely to help, stop here"
+    print(f"\nbest uplift {bup:+.4f} @ H={bH}d  ->  {verdict}")
 
 
 if __name__ == '__main__':
