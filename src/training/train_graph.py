@@ -63,7 +63,7 @@ class FXRegimeModel(nn.Module):
 
 # data
 def resolve_data_dir():
-    for c in (Path(__file__).parent.parent.parent / 'data', Path('data')):
+    for c in (Path(__file__).parent.parent.parent / 'data_live_2026', Path('data_live_2026')):
         if (c / 'X.npy').exists():
             return c
     raise FileNotFoundError('X.npy not found (expected in repo data/)')
