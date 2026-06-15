@@ -1,0 +1,8 @@
+HMM regime baseline | 2 states | test 2024-01-02 -> 2026-05-21  (n=599)
+  EUR-GBP: IC -0.0146   p = 0.828
+  EUR-JPY: IC -0.1547   p = 0.031
+  GBP-JPY: IC -0.0752   p = 0.256
+  MEAN IC -0.0815   per-pair p = 0.828, 0.031, 0.256
+
+  graph model (from attn_test.npz): mean IC +0.2883
+  HMM minus graph: -0.3699
