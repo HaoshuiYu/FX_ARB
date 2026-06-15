@@ -1,0 +1,4 @@
+﻿numpy==2.4.4
+pandas==2.2.3
+torch==2.12.0
+hmmlearn==0.3.3
