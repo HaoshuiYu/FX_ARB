@@ -10,27 +10,32 @@ __pycache__/
 
 # Jupyter
 .ipynb_checkpoints/
-*.ipynb_checkpoints
 
 # Data files — don't push large datasets to GitHub
 data/
+data_live_2026/
+results/data_archive_2024/
 *.csv
 *.parquet
 *.h5
+*.npy
 
 # Virtual environment
 venv/
 env/
 .venv/
 
-# VS Code
+# Editor
 .vscode/
+.idea/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Model checkpoints — these get large
+# Model checkpoints / artifacts
+checkpoints/
 *.pt
 *.pth
 *.ckpt
+*.npz
