@@ -314,7 +314,8 @@ calibrated-MR   MEAN         0.1745   0.2221   0.4762  -0.1135
 - For most architectures, the Graph GRU narrowly outperforms the no Graph GRU. It could be signal but it could also be that the model is learning lower dimensional tricks due to the limited interval of testing being only 1 year. 
 - An additional benchmark Calibrated-MR is added for each category. It's the extent that the weighted correlation between each relevant context node contributes to the forecast. 
 
-### 6-13-2026 Run 6 and Consolidation
+### 6-13-2026 Run 6 
+*** Results and Consolidation ***
 - Run 1 illustrated strong IC in the mean reversion benchmark whereas the Graph architecture
 - Run 2 had an average IC for every edge of close to 0.5, creating doubt in execution error or leakage, and a largely negative calibrated-MR, showing misalignment between baseline and target, both warrant suspicion. Subsequently, runs 3-4 were compressed and isolated experiments to distinguish genuine signal from error in experimental design.  
 - Runs 1 through 4 all used data_archive_2024 where the testing period is only between 23-24. Comparatively, Runs 5 and 6 use data_live_2026 up to June 1st 2026 for testing. The train/validation/test splits are consistent with the exception of Runs 5 and 6 having another year and a half.
@@ -324,3 +325,9 @@ calibrated-MR   MEAN         0.1745   0.2221   0.4762  -0.1135
 - The Graph GRU does perform better on average by 0.02 in contrast to the plain GRU, a finding that's consistent with the 5th run. However, the EUR-GBP edge had outperformed in the 6th run by 0.07 whereas it was the primary edge that underperformed in run 5 by 0.01. These edge-specific, nuanced differences are liklier byproducts of particular time-series properties and nonstationary regimes rather than a general trend due to the architecture of the algorithm.
 - While the Graph GRU beats the baseline GRU, the improvements are marginal and likely unjustified given computational costs. In alieu to that, the Graph GRU performs about 0.06 below the optimized linear regression benchmark (linear regression between edge at time t vs t-Corr_w (lookback duration)). Thus, it's possible that Graph GRUs may perform better on further shorter time intervals, it is a worthy consideration to consider forecasting of 3 days, with a 20 day look back. 
 - An interesting finding is that the linear baseline has shown higher consistent performance with a minimum across all 12 quarters of 0.314 in contrast to both GRU models, where the Graph GRU had a minimum performance of 0.07 and the no Graph GRu had a minimum of 0.121. The lowest performance for both GRU models are 2024 Q2 whereas the linear model is 2024 Q3. It is likely a product of a FX event driven scenario where extensive past training on the GRU actively undermined the performance of the algorithm. Instead, the linear model experienced a smaller dip since it draws context exclusively from the past 20 days. 
+
+### 06-15-2026 Run 007 
+*** Results and Consolidation ***
+- Run 007 is deemed necessary primarily due to a mistake in implementing the permutation test for guaging perfect randomness. The block length in 006 was 20, but we used it to forecast 5 days looking ahead. This means that the prediction on 5 forward looking days are dependent and not independent. Thus, when I scrambled, the permutation must keep connected days together to mirror their dependence.
+- The residual pipeline is largely accurate and has not been altered for run 007. 
+- Run 007 only differs marginally in contrast to run 006, where the comparisons and relationships between the graph augmented GRU in contrast to baselines hold. The corrected block (25 vs 20) shifted the margin from −0.048 to −0.046 and P(margin>0) from 0.079 to 0.066 — negligible, with the statistical-tie conclusion unchanged.

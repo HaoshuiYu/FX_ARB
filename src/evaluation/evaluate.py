@@ -18,7 +18,7 @@ import torch.nn as nn
 from pathlib import Path
 
 from src.training.train_graph import (FXRegimeModel, build_targets, build_edge_feats, trailing_corr,
-                                      valid_ts, resolve_data_dir, CORR_W, WINDOWS_PER_CHUNK)
+                                      valid_ts, resolve_data_dir, CORR_W, HORIZON, WINDOWS_PER_CHUNK)
 from src.models.edge_gru import SEQ_LEN
 from src.evaluation.significance_test import perm_test, ic
 
@@ -136,18 +136,6 @@ def baseline_calibrated_lin(X, tgt, ts_tr, ts_te):
                       + coef[2] * np.nan_to_num(ls[ts_te, p]))
     return pred
 
-
-def baseline_mean_reversion(ts, X):
-    """Predict the NEGATIVE of the last realized CORR_W-day shift."""
-    pred = np.zeros((len(ts), 3), dtype=np.float32)
-    pairs = [(0, 1), (0, 2), (1, 2)]
-    for p, (a, b) in enumerate(pairs):
-        trail = pd.Series(X[:, a, 0]).rolling(CORR_W).corr(pd.Series(X[:, b, 0])).to_numpy()
-        last_shift = trail[ts] - trail[ts - CORR_W]
-        pred[:, p] = -np.nan_to_num(last_shift)
-    return pred
-
-
 class PlainGRU(nn.Module):
     """No-graph: same information as the graph model (raw target-node
     features + the 3 pairs' [rho_trail, d_rho] = 15 inputs)
@@ -219,10 +207,10 @@ def significance_block(true, named_preds):
               + ", ".join(f"{v:.3f}" for v in ps))
 
     g = dict(named_preds)['graph model']; c = dict(named_preds)['calibrated-lin']
-    T = len(true); blocks = np.arange(0, T, 20); diffs = []
+    T = len(true); BLK = CORR_W + HORIZON; blocks = np.arange(0, T, BLK); diffs = []
     for _ in range(2000):
         sel = rng.choice(blocks, size=len(blocks), replace=True)
-        idx = np.concatenate([np.arange(s, min(s + 20, T)) for s in sel])
+        idx = np.concatenate([np.arange(s, min(s + BLK, T)) for s in sel])
         d = [ic(g[idx, p], true[idx, p]) - ic(c[idx, p], true[idx, p])
              for p in range(true.shape[1])]
         diffs.append(np.mean(d))
@@ -249,21 +237,6 @@ def quarterly_ic(dates_te, name, pred, true):
                        if pp.std() > 1e-12 and tp.std() > 1e-12 else 0.0)
         out.append(f"  {per}: IC {np.mean(ics):+.3f} (n={int(m.sum())})")
     print('\n'.join(out))
-
-
-# attention
-def attention_report(attns, names):
-    """attns: [D, 6, H, 25] over test days."""
-    A = attns.mean(axis=2)                           # [D, 6, 25] head-avg
-    edges = ['EUR>GBP', 'GBP>EUR', 'EUR>JPY', 'JPY>EUR', 'GBP>JPY', 'JPY>GBP']
-    print("\nattention readout (test period)")
-    for e in range(6):
-        mean_a = A[:, e, :].mean(axis=0)
-        top = np.argsort(mean_a)[::-1][:3]
-        survivors = float((A[:, e, :] > 0).sum(axis=1).mean())
-        tops = ', '.join(f"{names[i]} ({mean_a[i]:.2f})" for i in top)
-        print(f"  {edges[e]:<8} avg survivors/day {survivors:4.1f} | top: {tops}")
-
 
 # main
 def main():

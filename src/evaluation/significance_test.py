@@ -1,26 +1,25 @@
 """
-significance_test.py 
-1. PERMUTATION TEST (block-aware): shuffle the prediction series against the
+significance_test.py
+1. Permutation test (block-aware): shuffle the prediction series against the
    outcome series many times, in contiguous blocks of CORR_W days (plain
    shuffling would destroy the overlap structure and overstate significance).
    The p-value = fraction of shuffles whose |IC| beats the real |IC|.
    p < 0.05 -> the IC is unlikely to be luck. p ~ 0.3+ -> indistinguishable
    from noise.
 
-2. SIGN-BALANCE CHECK: share of positive target signs per pair. ~0.5 means
+2. Sign-balance check: share of positive target signs per pair. ~0.5 means
    DirAcc is meaningful; ~0.65 means a sign-imbalance freebie inflates it.
-
-Reads checkpoints/attn_test.npz (written by evaluate.py: preds, true, dates).
-Run from repo root:  python -m src.evaluation.significance_test
 """
 import numpy as np
 from pathlib import Path
 
-NPZ     = Path('checkpoints/attn_test.npz')
-CORR_W  = 20          # block length = target horizon (keeps overlap structure)
-N_PERM  = 2000
-SEED    = 0
-PAIRS   = ['EUR-GBP', 'EUR-JPY', 'GBP-JPY']
+from src.training.train_graph import CORR_W, HORIZON
+
+NPZ    = Path('checkpoints/attn_test.npz')
+BLOCK  = CORR_W + HORIZON # full dependency span: estimation overlap + forecast horizon
+N_PERM = 2000
+SEED   = 0
+PAIRS  = ['EUR-GBP', 'EUR-JPY', 'GBP-JPY']
 
 
 def ic(pred, true):
@@ -42,10 +41,10 @@ def perm_test(pred, true, rng):
     real = ic(pred, true)
     count = 0
     for _ in range(N_PERM):
-        sh = pred[block_permute(len(pred), CORR_W, rng)]
+        sh = pred[block_permute(len(pred), BLOCK, rng)]
         if abs(ic(sh, true)) >= abs(real):
             count += 1
-    return real, (count + 1) / (N_PERM + 1)        # add-one: unbiased p
+    return real, (count + 1) / (N_PERM + 1) # add-one: unbiased p
 
 
 def main():
@@ -53,10 +52,10 @@ def main():
     preds, true = d['preds'], d['true']
     rng = np.random.default_rng(SEED)
 
-    print(f"n test days: {len(true)}   (~{len(true)//CORR_W} independent obs)")
-    print(f"permutations: {N_PERM}, block = {CORR_W} days\n")
+    print(f"n test days: {len(true)}   (~{len(true)//BLOCK} independent obs)")
+    print(f"permutations: {N_PERM}, block = {BLOCK} days\n")
 
-    print("PERMUTATION TEST — graph model")
+    print("permutation test — graph model")
     pair_ps = []
     for p, name in enumerate(PAIRS):
         real, pv = perm_test(preds[:, p], true[:, p], rng)
@@ -66,7 +65,7 @@ def main():
     print(f"  MEAN IC {mean_real:+.4f}   (per-pair p-values above)")
     print("  read: p < 0.05 = likely real; p > 0.30 = noise\n")
 
-    print("SIGN-BALANCE CHECK — target")
+    print("sign-balance check — target")
     for p, name in enumerate(PAIRS):
         pos = float((true[:, p] > 0).mean())
         flag = "  <- imbalanced: DirAcc inflated" if abs(pos - 0.5) > 0.08 else ""
