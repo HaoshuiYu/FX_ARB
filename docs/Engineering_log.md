@@ -64,9 +64,9 @@ MTGNN is natively geared toward forecasting via entropy-based loss. Potential ad
 
 ## Train/Validation/Test 
 
-- **2006-2020:** training set
-- **2020-2022 (COVID):** testing set 1: evaluates transition detection — the sharpest regime transition in the dataset, never seen during training or validation
-- **2023-2025:** testing set 2: evaluates out-of-sample generalization in a post-crisis normalization regime
+- **2006-2022:** training set
+- **2022-2024:** validation set
+- **2024-2026:** testing set
 
 The choice of 2 testing sets is intentional. Otherwise, conflating the two objectives into a single test set would obscure whether underperformance stems from poor transition detection or poor regime classification in unseen conditions.
 
@@ -90,14 +90,6 @@ The graph transformer output is split into two representations:
 
 **Thesis:** the purpose of using these huber_loss and contrastive loss as metrics is to compute a global loss function that forces these two to agree with a set of hyperparameter or learn the weight of how to allocate these two. This property means the algorithm can make classificaitions and understand transitions. More importantly, the direction and degree of similarity and classification changes should agree as an internal metric to quantify the uncertainty present within this model. This is the loss function that exists throughout the graph architecture. Then each layer of the graphs serve as a snapshot of a sequence entered into the GRU.
 So, the GRU will be able to pick up on the way the agreements between dissimilarity and classification to unify them in making predictions given the level of agreement between these two values.
-
-
----
-
-## References
-
-- [FX Graph Learning for Statistical Arbitrage — ACM 2024](https://dl.acm.org/doi/epdf/10.1145/3768292.3770418)
-- Michael Womack — curvature analysis (masters thesis, citation TBD)
 
 ---
 
