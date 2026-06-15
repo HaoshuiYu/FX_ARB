@@ -1,19 +1,15 @@
-# build: RUN-005-FINAL (raw target, integrated significance) — if missing, stale
 """
 evaluate.py — the judge. Scores the trained FXRegimeModel on the untouched
-test period (2024) against baselines, and exports attention maps for the
+out-of-sample test period against baselines, and exports attention maps for the
 regime-fingerprint analysis.
 
 Baselines:
   zero            predict no correlation shift (strong null)
-  mean-reversion  predict the negative of the most recent realized shift
+  calibrated-lin  OLS on trailing correlation features (the linear mechanics bar)
   plain GRU       same task, raw target-node features, NO graph (the
                   ablation that isolates what the graph buys)
 
 Metrics per pair + mean: MAE, RMSE, directional accuracy, Pearson IC.
-
-Run from repo root after training:  python -m src.evaluation.evaluate
-Expects checkpoints/best_model.pt from train_graph.py.
 """
 import numpy as np
 import pandas as pd
@@ -22,10 +18,9 @@ import torch.nn as nn
 from pathlib import Path
 
 from src.training.train_graph import (FXRegimeModel, build_targets, build_edge_feats, trailing_corr,
-                                      valid_ts, resolve_data_dir, CORR_W,
-                                      WINDOWS_PER_CHUNK, RESIDUAL)
+                                      valid_ts, resolve_data_dir, CORR_W, WINDOWS_PER_CHUNK)
 from src.models.edge_gru import SEQ_LEN
-from src.evaluation.significance_test import perm_test, ic, block_permute
+from src.evaluation.significance_test import perm_test, ic
 
 CKPT       = Path('checkpoints/best_model.pt')
 ATTN_OUT   = Path('checkpoints/attn_test.npz')
@@ -37,8 +32,6 @@ BASE_HIDDEN     = 24
 BASE_MAX_EPOCHS = 100
 BASE_PATIENCE   = 8
 
-
-# ----------------------------- helpers -------------------------------------
 def load_everything():
     data_dir = resolve_data_dir()
     X = np.load(data_dir / 'X.npy').astype(np.float32)
@@ -47,7 +40,7 @@ def load_everything():
     names = pd.read_csv(data_dir / 'node_names.csv')['0'].values
 
     ck = torch.load(CKPT, weights_only=False)
-    mu, sd = ck['mu'], ck['sd']                      # train-period stats, frozen
+    mu, sd = ck['mu'], ck['sd'] # train-period stats, frozen
     Xs = ((X - mu) / sd).astype(np.float32)
     Xs[M] = 0.0
 
@@ -88,7 +81,7 @@ def model_forward_factory(model, Xs, M, EF):
         Ed = torch.from_numpy(EF[d0:d1 + 1]).to(DEVICE)
         p, a = model.forward_chunk(Xd, Md, Ed)
         keep = block - block[0]
-        return p[keep], a[keep + SEQ_LEN - 1]        # attn of each prediction DAY
+        return p[keep], a[keep + SEQ_LEN - 1]   
     return f
 
 
@@ -120,16 +113,16 @@ def print_table(rows):
         print('-' * len(hdr))
 
 
-# ----------------------------- baselines -----------------------------------
+# baseline
 def baseline_zero(ts, tgt):
     return np.zeros((len(ts), 3), dtype=np.float32)
 
 
 def baseline_calibrated_lin(X, tgt, ts_tr, ts_te):
-    """THE CERTIFICATE: the free trick itself — OLS on [1, trail, shift],
-    fitted on TRAIN against the current target, scored on test. On the
-    sterilized target it must sit ~0; its row proves the cheap channels are
-    out of the answer key. Model skill = whatever clears this row."""
+    """The linear mechanics bench: an OLS regression of the
+    target on [1, trailing correlation, recent change], fit on train and scored
+    on test. 
+    """
     trail = trailing_corr(X)
     ls = np.full_like(trail, np.nan)
     ls[CORR_W:] = trail[CORR_W:] - trail[:-CORR_W]
@@ -156,16 +149,16 @@ def baseline_mean_reversion(ts, X):
 
 
 class PlainGRU(nn.Module):
-    """No-graph control: SAME information as the graph model (raw target-node
-    features + the 3 pairs' [rho_trail, d_rho] = 15 inputs), no graph. Any
-    edge the graph model shows over this is attributable to architecture."""
+    """No-graph: same information as the graph model (raw target-node
+    features + the 3 pairs' [rho_trail, d_rho] = 15 inputs)
+    """
     def __init__(self):
         super().__init__()
         self.gru = nn.GRU(15, BASE_HIDDEN, batch_first=True)
         self.drop = nn.Dropout(0.4)
         self.head = nn.Linear(BASE_HIDDEN, 3)
 
-    def forward(self, w):                            # w: [B, 20, 9]
+    def forward(self, w):                            # w: [B, SEQ_LEN, 15]
         _, h = self.gru(self.drop(w))
         return self.head(self.drop(h.squeeze(0)))
 
@@ -210,12 +203,11 @@ def train_plain_gru(Xs, EF, tgt, ts_tr, ts_va):
 
 
 def significance_block(true, named_preds):
-    """FINAL VERDICT BLOCK. (1) block-permutation p per model: is its IC
+    """Final verdict: (1) block-permutation p per model: is its IC
     distinguishable from shuffled noise? (2) block-bootstrap of the IC margin
     graph-minus-calibrated-lin: does the architecture beat the 3-number
-    mechanics formula? Pre-registered reading: model p<0.05 = real skill;
-    margin P(>0) >= 0.95 = beats the formula; otherwise tie = decomposition
-    story. Results stand as-is."""
+    mechanics formula? 
+    """
     rng = np.random.default_rng(0)
     print("\nSIGNIFICANCE (block permutation, 2000 shuffles)")
     for name, pred in named_preds:
@@ -259,7 +251,7 @@ def quarterly_ic(dates_te, name, pred, true):
     print('\n'.join(out))
 
 
-# ----------------------------- attention readout ----------------------------
+# attention
 def attention_report(attns, names):
     """attns: [D, 6, H, 25] over test days."""
     A = attns.mean(axis=2)                           # [D, 6, 25] head-avg
@@ -273,7 +265,7 @@ def attention_report(attns, names):
         print(f"  {edges[e]:<8} avg survivors/day {survivors:4.1f} | top: {tops}")
 
 
-# ----------------------------- main -----------------------------------------
+# main
 def main():
     Xs, M, EF, tgt, ts_tr, ts_va, ts_te, dates, names, model = load_everything()
     X_raw = np.load(resolve_data_dir() / 'X.npy').astype(np.float32)
@@ -299,7 +291,7 @@ def main():
     quarterly_ic(d_te, 'plain GRU', base_preds, true)
     quarterly_ic(d_te, 'calibrated-lin', lin_preds, true)
     np.savez(ATTN_OUT, attn=attns, dates=dates[ts_te].astype(str), preds=preds, true=true)
-    print(f"\nattention maps + predictions saved -> {ATTN_OUT} (for inspect_attention.ipynb)")
+    print(f"\nattention maps + predictions saved -> {ATTN_OUT} (for inspect_data.ipynb)")
 
 
 if __name__ == '__main__':

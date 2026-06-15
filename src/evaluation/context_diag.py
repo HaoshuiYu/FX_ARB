@@ -1,5 +1,5 @@
 """
-context_diagnostics.py — the gate before the frame sweep.
+context_diag.py — the gate before the frame sweep.
 
 The graph's only edge over the plain GRU is the 22 non-target currencies. This
 asks whether they carry distinct, lead-lagging signal for the forward
@@ -18,7 +18,7 @@ Estimation window CORR_W is held fixed (label noise constant); only the forecast
 horizon varies. Ridge on TRAIN, IC on VAL. PULSE at any horizon -> sweep is
 justified. FLAT at all three -> defensible negative, stop before training.
 
-Run from repo root:  python -m src.evaluation.context_diagnostics
+Run from repo root:  python -m src.evaluation.context_diag
 """
 import numpy as np
 import pandas as pd
