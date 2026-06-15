@@ -3,22 +3,12 @@ context_diag.py — the gate before the frame sweep.
 
 The graph's only edge over the plain GRU is the 22 non-target currencies. This
 asks whether they carry distinct, lead-lagging signal for the forward
-correlation shift, BEFORE any graph-training wall-clock is spent.
+correlation shift, before any graph-training wall-clock is spent.
 
-Two corrections over the first cut, both needed for the read to mean anything:
-  - sterilized target: the train-only [1, trail, d_rho] fit is removed first, so
-    the mechanical mean-reversion channel (base IC ~0.68 on the raw target) is
-    out of the answer key. base IC should now sit ~0; any +context uplift is
-    real relational signal, not leftover mechanics.
-  - horizon loop: short horizons are a different, less mechanical target AND give
-    more independent blocks. We probe H in {5, 10, 20} so "signal lives at short
-    horizon" and "signal is mechanical, not relational" are tested in one pass.
-
-Estimation window CORR_W is held fixed (label noise constant); only the forecast
+Estimation window CORR_W is held fixed (label noise constant) at 20; only the forecast
 horizon varies. Ridge on TRAIN, IC on VAL. PULSE at any horizon -> sweep is
 justified. FLAT at all three -> defensible negative, stop before training.
 
-Run from repo root:  python -m src.evaluation.context_diag
 """
 import numpy as np
 import pandas as pd
@@ -27,11 +17,11 @@ from pathlib import Path
 from src.training.train_graph import trailing_corr, resolve_data_dir, CORR_W
 
 PULSE_MIN = 0.02
-N_SHUFFLE = 200                                 # context-permutation null draws
+N_SHUFFLE = 200 # context-permutation null draws
 ALPHAS    = [1.0, 10.0, 100.0, 1e3, 1e4, 1e5]
 HORIZONS  = [5, 10, 20]
 PAIRS     = ['EUR-GBP', 'EUR-JPY', 'GBP-JPY']
-CONTEXT   = list(range(3, 25))                  # the 22 non-target nodes
+CONTEXT   = list(range(3, 25))  # the 22 non-target nodes
 
 
 def node_feats(X, t):
@@ -163,7 +153,8 @@ def main():
     results = [run_horizon(X, trail, ls, H, train_hi, val_hi, rng) for H in HORIZONS]
 
     print("\n" + "=" * 52)
-    best = max(results, key=lambda r: r[1])
+    significant = [r for r in results if r[1] >= PULSE_MIN and r[3] < 0.05]
+    best = max(significant, key=lambda r: r[1]) if significant else max(results, key=lambda r: r[1])
     for H, up, base_ic, p in results:
         real = up >= PULSE_MIN and p < 0.05
         tag = "PULSE (survives shuffle)" if real else ("flat" if up < PULSE_MIN
