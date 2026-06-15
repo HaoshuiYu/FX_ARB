@@ -1,4 +1,4 @@
-# FX_GNN — Design Notes
+# FX_GNN — Engineering Log
 
 Internal research log. Tracks architectural decisions, rejected approaches, and open questions. Not intended as polished documentation.
 
