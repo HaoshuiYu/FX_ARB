@@ -79,3 +79,14 @@ gitignored). Place `X.npy`, `nan_mask.npy`, `dates.csv`, `node_names.csv` in
   a regime-dependent weakness, not yet diagnosed.
 - HMM baseline is a standard 2-state Gaussian; a Student-t or higher-state
   variant is the natural extension, not yet explored.
+
+## Reproducibility
+
+- Data schema: `X.npy` is `[T, 25, 3]` — per node [daily return, level z-score,
+  vol]; node order in `node_names.csv`; `nan_mask.npy` marks missing cells
+  (True = masked). Dates in `dates.csv`.
+- Splits: train ≤ 2021-12-31, validation ≤ 2023-12-31, test 2024-01-02 →
+  2026-05-21 (599 predictions). Standardization is fit on train only.
+- Config via env vars: `FX_HORIZON` (default 20), `FX_SEED` (0), `FX_CORR_W`
+  (20), `FX_SEQ_LEN` (20), `FX_GRU_HIDDEN` (24). All reported results use
+  seed 0 and horizon 5 unless noted.
