@@ -190,12 +190,26 @@ def train_plain_gru(Xs, EF, tgt, ts_tr, ts_va):
     return net
 
 
+def margin_ci(a, b, true, rng, label):
+    """Block-bootstrap the mean-IC margin of predictions a over predictions b."""
+    T = len(true); BLK = CORR_W + HORIZON
+    blocks = np.arange(0, T, BLK); diffs = []
+    for _ in range(2000):
+        sel = rng.choice(blocks, size=len(blocks), replace=True)
+        idx = np.concatenate([np.arange(s, min(s + BLK, T)) for s in sel])
+        d = [ic(a[idx, p], true[idx, p]) - ic(b[idx, p], true[idx, p])
+             for p in range(true.shape[1])]
+        diffs.append(np.mean(d))
+    diffs = np.array(diffs)
+    lo, hi = np.percentile(diffs, [2.5, 97.5])
+    print(f"  {label}: mean IC margin {diffs.mean():+.4f}, "
+          f"95% CI [{lo:+.3f}, {hi:+.3f}], P(margin>0) = {(diffs > 0).mean():.3f}")
+
+
 def significance_block(true, named_preds):
-    """Final verdict: (1) block-permutation p per model: is its IC
-    distinguishable from shuffled noise? (2) block-bootstrap of the IC margin
-    graph-minus-calibrated-lin: does the architecture beat the 3-number
-    mechanics formula? 
-    """
+    """(1) Block-permutation p per model: is its IC distinguishable from
+    shuffled noise? (2) Block-bootstrap CIs on the graph's IC margin over
+    the calibrated linear baseline and over the matched no-graph GRU."""
     rng = np.random.default_rng(0)
     print("\nSIGNIFICANCE (block permutation, 2000 shuffles)")
     for name, pred in named_preds:
@@ -206,18 +220,11 @@ def significance_block(true, named_preds):
         print(f"  {name:<15} mean IC {np.mean(ics):+.4f}   per-pair p = "
               + ", ".join(f"{v:.3f}" for v in ps))
 
-    g = dict(named_preds)['graph model']; c = dict(named_preds)['calibrated-lin']
-    T = len(true); BLK = CORR_W + HORIZON; blocks = np.arange(0, T, BLK); diffs = []
-    for _ in range(2000):
-        sel = rng.choice(blocks, size=len(blocks), replace=True)
-        idx = np.concatenate([np.arange(s, min(s + BLK, T)) for s in sel])
-        d = [ic(g[idx, p], true[idx, p]) - ic(c[idx, p], true[idx, p])
-             for p in range(true.shape[1])]
-        diffs.append(np.mean(d))
-    diffs = np.array(diffs)
-    lo, hi = np.percentile(diffs, [2.5, 97.5])
-    print(f"  graph minus calibrated-lin: mean IC margin {diffs.mean():+.4f}, "
-          f"95% CI [{lo:+.3f}, {hi:+.3f}], P(margin>0) = {(diffs > 0).mean():.3f}")
+    d = dict(named_preds)
+    margin_ci(d['graph model'], d['calibrated-lin'], true, rng,
+              'graph minus calibrated-lin')
+    margin_ci(d['graph model'], d['plain GRU'], true, rng,
+              'graph minus plain-GRU')
 
 
 def quarterly_ic(dates_te, name, pred, true):

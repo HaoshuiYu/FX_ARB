@@ -1,4 +1,3 @@
-# build: RUN-004B (unchanged; banner bumped for fingerprint consistency) — if this line is missing, the file is stale
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,10 +25,9 @@ class FXEdgeTransformer(nn.Module):
     def __init__(self):
         super().__init__()
 
-        # preserve dimensionality compress down the line 
-        # RUN 002: edge birth input = [feature diff (3), rho_trail, d_rho_trail]
-        # — each edge now starts knowing its own pair's measured relationship
-        # (trailing 20d correlation) and where it's heading (its recent change).
+        # preserve dimensionality, compress down the line.
+        # edge birth input = [feature diff (3), rho_trail, d_rho_trail] — each
+        # edge starts knowing its pair's measured correlation and recent change.
         self.edge_init = nn.ModuleList([
             nn.Linear(D_INPUT + 2, D_EDGE)
             for _ in range(NUM_EDGES)
