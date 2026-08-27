@@ -9,17 +9,24 @@ EUR-GBP, EUR-JPY, and GBP-JPY.
 ## Result
 
 At the 5-day horizon, the graph model:
-- beats a no-graph plain-GRU control (mean IC 0.288 vs 0.270, per-pair p ≤ 0.002),
+- outperforms a no-graph plain-GRU control on mean IC (0.288 vs 0.270; margin +0.019, 95% CI [−0.044, +0.076], P(margin>0) = 0.733),
 - beats a 2-state Gaussian HMM regime baseline (0.288 vs −0.082),
 - but only ties — while still trailing — a calibrated linear mean-reversion
   baseline (0.288 vs 0.329; margin −0.046, 95% CI [−0.113, +0.012]).
+
+The graph-vs-GRU margin leans positive in 73% of block-bootstrap resamples, but
+overlapping estimation windows and forecast horizons leave only ~24 effectively
+independent test blocks — too few to certify an edge this small at the 95%
+level. The uplift from relational context is directionally suggestive but
+statistically unresolved; a longer test period, not a different architecture,
+is what would settle it.
 
 At the 20-day horizon the graph loses to the linear baseline outright. So across
 both horizons it never beats linear mechanics — it ties at best.
 
 Conclusion: the predictable structure in these correlation shifts is largely
-linear and mean-reverting; the graph architecture adds measurable value over a
-plain GRU but not over a two-feature linear model.
+linear and mean-reverting; the graph architecture adds a small, statistically
+unresolved edge over a plain GRU and no advantage over a two-feature linear model.
 
 ## Why the evaluation is built this way
 
