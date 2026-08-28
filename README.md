@@ -69,8 +69,8 @@ gitignored). Place `X.npy`, `nan_mask.npy`, `dates.csv`, `node_names.csv` in
 ## Running
 
     pip install -r requirements.txt
-    python -m src.training.train_graph                     # trains -> checkpoints/best_model.pt
-    $env:FX_HORIZON=5; python -m src.evaluation.evaluate   # scores + significance
+    $env:FX_HORIZON=5; python -m src.training.train_graph    # trains -> checkpoints/best_model.pt
+    $env:FX_HORIZON=5; python -m src.evaluation.evaluate     # scores + significance
 
 ## Limitations & future work
 
