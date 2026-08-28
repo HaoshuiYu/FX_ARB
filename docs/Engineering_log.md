@@ -323,3 +323,8 @@ calibrated-MR   MEAN         0.1745   0.2221   0.4762  -0.1135
 - Run 007 is deemed necessary primarily due to a mistake in implementing the permutation test for guaging perfect randomness. The block length in 006 was 20, but we used it to forecast 5 days looking ahead. This means that the prediction on 5 forward looking days are dependent and not independent. Thus, when I scrambled, the permutation must keep connected days together to mirror their dependence.
 - The residual pipeline is largely accurate and has not been altered for run 007. 
 - Run 007 only differs marginally in contrast to run 006, where the comparisons and relationships between the graph augmented GRU in contrast to baselines hold. The corrected block (25 vs 20) shifted the margin from −0.048 to −0.046 and P(margin>0) from 0.079 to 0.066 — negligible, with the statistical-tie conclusion unchanged.
+
+### 08-26-2006 Run 008
+*** Results and Consolidation***
+- Bootstrapped the graph-vs-GRU margin directly: +0.0191, 95% CI [-0.044, +0.076], P(margin>0) = 0.733. Positive but unresolved. The prior README attribution of per-pair p <= 0.002 to this margin was incorrect — that test addressed per-model significance vs noise, not the margin between models. README corrected accordingly. Per-pair: graph wins EUR-GBP and EUR-JPY; plain GRU wins GBP-JPY.
+- *[Superseded: the final pipeline uses a 2022–2023 validation split with early stopping.]*
