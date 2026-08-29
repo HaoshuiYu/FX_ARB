@@ -1,4 +1,4 @@
-model           pair            MAE     RMSE   DirAcc       IC
+﻿model           pair            MAE     RMSE   DirAcc       IC
 --------------------------------------------------------------
 graph model     EUR-GBP      0.0643   0.0860   0.5292   0.3627
 graph model     EUR-JPY      0.0927   0.1217   0.5726   0.2813
@@ -26,7 +26,7 @@ SIGNIFICANCE (block permutation, 2000 shuffles)
   plain GRU       mean IC +0.2698   per-pair p = 0.001, 0.001, 0.000
   calibrated-lin  mean IC +0.3289   per-pair p = 0.000, 0.000, 0.000
   graph minus calibrated-lin: mean IC margin -0.0483, 95% CI [-0.119, +0.013], P(margin>0) = 0.079
-quarterly IC — graph model:
+quarterly IC â€” graph model:
   2024Q1: IC +0.400 (n=62)
   2024Q2: IC +0.070 (n=63)
   2024Q3: IC +0.367 (n=64)
@@ -37,7 +37,7 @@ quarterly IC — graph model:
   2025Q4: IC +0.213 (n=62)
   2026Q1: IC +0.423 (n=61)
   2026Q2: IC +0.364 (n=37)
-quarterly IC — plain GRU:
+quarterly IC â€” plain GRU:
   2024Q1: IC +0.367 (n=62)
   2024Q2: IC +0.121 (n=63)
   2024Q3: IC +0.512 (n=64)
@@ -48,7 +48,7 @@ quarterly IC — plain GRU:
   2025Q4: IC +0.345 (n=62)
   2026Q1: IC +0.437 (n=61)
   2026Q2: IC +0.178 (n=37)
-quarterly IC — calibrated-lin:
+quarterly IC â€” calibrated-lin:
   2024Q1: IC +0.453 (n=62)
   2024Q2: IC +0.338 (n=63)
   2024Q3: IC +0.314 (n=64)
