@@ -1,4 +1,4 @@
-﻿test predictions: 599  (2024-01-02 ΓåÆ 2026-05-21)
+﻿test predictions: 599  (2024-01-02 -> 2026-05-21)
 training plain-GRU baseline (no graph)...
 
 model           pair            MAE     RMSE   DirAcc       IC
@@ -30,7 +30,7 @@ SIGNIFICANCE (block permutation, 2000 shuffles)
   calibrated-lin  mean IC +0.3289   per-pair p = 0.000, 0.000, 0.000
   graph minus calibrated-lin: mean IC margin -0.0460, 95% CI [-0.113, +0.012], P(margin>0) = 0.066
   graph minus plain-GRU: mean IC margin +0.0191, 95% CI [-0.044, +0.076], P(margin>0) = 0.733
-quarterly IC ΓÇö graph model:
+quarterly IC -- graph model:
   2024Q1: IC +0.400 (n=62)
   2024Q2: IC +0.070 (n=63)
   2024Q3: IC +0.367 (n=64)
@@ -41,7 +41,7 @@ quarterly IC ΓÇö graph model:
   2025Q4: IC +0.213 (n=62)
   2026Q1: IC +0.423 (n=61)
   2026Q2: IC +0.364 (n=37)
-quarterly IC ΓÇö plain GRU:
+quarterly IC -- plain GRU:
   2024Q1: IC +0.367 (n=62)
   2024Q2: IC +0.121 (n=63)
   2024Q3: IC +0.512 (n=64)
@@ -52,7 +52,7 @@ quarterly IC ΓÇö plain GRU:
   2025Q4: IC +0.345 (n=62)
   2026Q1: IC +0.437 (n=61)
   2026Q2: IC +0.178 (n=37)
-quarterly IC ΓÇö calibrated-lin:
+quarterly IC -- calibrated-lin:
   2024Q1: IC +0.453 (n=62)
   2024Q2: IC +0.338 (n=63)
   2024Q3: IC +0.314 (n=64)

@@ -1,5 +1,5 @@
 """
-evaluate.py — the judge. Scores the trained FXRegimeModel on the untouched
+evaluate.py -- the judge. Scores the trained FXRegimeModel on the untouched
 out-of-sample test period against baselines, and exports attention maps for the
 regime-fingerprint analysis.
 
@@ -231,7 +231,7 @@ def quarterly_ic(dates_te, name, pred, true):
     """Per-quarter IC (mean across pairs). Exposes episode concentration:
     if one quarter carries the whole score, the 'skill' is one event."""
     q = pd.PeriodIndex(pd.DatetimeIndex(dates_te), freq='Q')
-    out = [f"quarterly IC — {name}:"]
+    out = [f"quarterly IC -- {name}:"]
     for per in q.unique():
         m = (q == per)
         if m.sum() < 8:
@@ -250,7 +250,7 @@ def main():
     Xs, M, EF, tgt, ts_tr, ts_va, ts_te, dates, names, model = load_everything()
     X_raw = np.load(resolve_data_dir() / 'X.npy').astype(np.float32)
     true = tgt[ts_te]
-    print(f"test predictions: {len(ts_te)}  ({dates[ts_te[0]].date()} → {dates[ts_te[-1]].date()})")
+    print(f"test predictions: {len(ts_te)}  ({dates[ts_te[0]].date()} -> {dates[ts_te[-1]].date()})")
 
     preds, attns = chunked_preds(model_forward_factory(model, Xs, M, EF), ts_te)
     rows = [('graph model', metrics(preds, true)),
